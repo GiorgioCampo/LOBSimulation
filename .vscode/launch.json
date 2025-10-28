@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug extractDataFrames",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/single_day_lob_analysis.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--root",
+                "./var",
+                "--venue",
+                "NASDAQ",
+                "--date",
+                "20191001",
+                "--symbol",
+                "FLEX"
+            ],
+            "justMyCode": true
+        }
+    ]
+}
