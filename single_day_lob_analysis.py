@@ -263,8 +263,12 @@ def main():
     # In general, check for artifacts (weird values ex. price falling back to opening price, etc.) and general cleaness of the dataset
     # Check extractDataFramesFromVar to see how it manipulates it - also there were some timestamp matches in the var files
  
-    print(df_map)
+    #print(df_map)
 
+    # Export all dataframes for later reuse
+    os.makedirs(f"out/data/{args.date}", exist_ok=True)
+    for k, v in df_map.items():
+        v.to_csv(f"out/data/{args.date}/FLEX_{k}.csv", index=False)
 
     filtered = {k: filter_between(v, args.start, args.end) for k, v in df_map.items()}
 
