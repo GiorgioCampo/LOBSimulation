@@ -24,6 +24,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+SAVE_FILES = False
+
 # ---------- Minimal fallback so utils.py can import SortedDict ----------
 sortedcontainers = types.ModuleType("sortedcontainers")
 class SortedDict(dict):
@@ -249,26 +251,27 @@ def main():
     # 3) BBO_DELTA
     #    contains best bid and best ask deltas by timestamp for the selected day
     # 4) MICRO_PX
-    #    no idea of what this is
+    #    According to ChatGPT (double check!) it is an indicator of the order book imbalance, calculated with some formula (which we dont know)
     # 5) OFI
-    #    order fill? or similar
+    #    order flow imbalance (delta bid volume - delta ask volume) -> double check!
     # 6) ORDER_SUMMARY
-    #    contains details of added / deleted orders
+    #    contains details of added / deleted orders -> TRD orders are the one executed (roughly 3k / 83k total)
     # 7) L2_SNAPSHOT
     #    level 5 (lol) order book details. Apparently there are some changes in the positions 
-    #    (either queues sizes or prices) even if the timestamp is exactly! the same. Also bid / ask levels seem equally spaced
-    #    between timestamps, which is suspicious. To check:
+    #    (either queues sizes or prices) even if the timestamp is exactly! the same. 
+    #    The fact that bid / ask prices are equally spaced is normal: in dense markets, all levels move by the same tick. To check this:
     #    plt.figure(); plt.plot(df_map["L2_SNAPSHOT"]["askPx_0"].astype(float), label="0"); plt.plot(df_map["L2_SNAPSHOT"]["askPx_1"].astype(float), label="1"); plt.plot(df_map["L2_SNAPSHOT"]["askPx_2"].astype(float), label="2"); plt.plot(df_map["L2_SNAPSHOT"]["askPx_3"].astype(float), label="3"); plt.plot(df_map["L2_SNAPSHOT"]["askPx_4"].astype(float), label="4"); plt.legend(); plt.show()
 
     # In general, check for artifacts (weird values ex. price falling back to opening price, etc.) and general cleaness of the dataset
     # Check extractDataFramesFromVar to see how it manipulates it - also there were some timestamp matches in the var files
  
-    #print(df_map)
+    print(df_map)
 
     # Export all dataframes for later reuse
-    os.makedirs(f"out/data/{args.date}", exist_ok=True)
-    for k, v in df_map.items():
-        v.to_csv(f"out/data/{args.date}/FLEX_{k}.csv", index=False)
+    if SAVE_FILES:
+        os.makedirs(f"out/data/{args.date}", exist_ok=True)
+        for k, v in df_map.items():
+            v.to_csv(f"out/data/{args.date}/FLEX_{k}.csv", index=False)
 
     filtered = {k: filter_between(v, args.start, args.end) for k, v in df_map.items()}
 
