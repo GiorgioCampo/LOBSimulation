@@ -119,7 +119,8 @@ def train_gan(
     wgan=False,
     critic_steps=5,
     lr_g=1e-4,
-    lr_d=1e-4
+    lr_d=1e-4,
+    lambda_gp=10
 ):
     """
     Training skeleton for vanilla GAN or WGAN.
@@ -178,7 +179,6 @@ def train_gan(
                 gradients = gradients.view(batch_size, -1)
                 gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
 
-                lambda_gp = 10.0  # standard value
                 # NB: Compared to the paper, here we minimize -loss instead of maximizing loss (eq. 15)
                 #     Thus, gradient penalty is added
                 d_loss = wasserstein_loss + lambda_gp * gradient_penalty

@@ -1,3 +1,7 @@
 *.png
 *.zip
 *.var
+*.pyc
+*.pt
+plots/
+generated_lob.csv

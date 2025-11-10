@@ -66,6 +66,9 @@ def filter_between(df, start_t, end_t):
 
 def save_ts_plot(series_or_df, title, ylabel, fname, out_dir):
     plt.figure()
+    # Filter to get only the first column to plot
+    if isinstance(series_or_df, pd.DataFrame):
+        series_or_df = series_or_df.iloc[:, 0]
     if isinstance(series_or_df, pd.Series):
         series_or_df.plot()
     else:
@@ -327,6 +330,16 @@ def main():
     if not ask_levels.empty:
         outputs.append(save_ts_plot(ask_levels, f"Ask L0..L{args.topN-1} volumes",
                                     "Quantity", "ask_levels.png", out_dir))
+
+    plt.figure()
+    plt.plot(df_map["L2_SNAPSHOT"]["askPx_0"].astype(float), label="0")
+    plt.plot(df_map["L2_SNAPSHOT"]["askPx_1"].astype(float), label="1")
+    plt.plot(df_map["L2_SNAPSHOT"]["askPx_2"].astype(float), label="2")
+    plt.plot(df_map["L2_SNAPSHOT"]["askPx_3"].astype(float), label="3")
+    plt.plot(df_map["L2_SNAPSHOT"]["askPx_4"].astype(float), label="4")
+    plt.legend()
+    plt.show() 
+
     if {"bid_depth_topN","ask_depth_topN","imbalance_topN"}.issubset(metrics.keys()):
         depth_df = pd.DataFrame({
             "Bid depth (topN)": metrics["bid_depth_topN"],

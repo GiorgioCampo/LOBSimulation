@@ -1,0 +1,2 @@
+- Compare it to the DeepLOB
+- If wanted create an env variable for output paths, models name and params.
