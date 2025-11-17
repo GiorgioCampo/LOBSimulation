@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent[1]
 MODELS_DIR = BASE_DIR / "out/models/"
 
 # Random seed
@@ -238,7 +238,7 @@ def train_gan(
         print(
             f"Epoch {epoch+1}/{num_epochs} | "
             f"D_loss: {d_loss.item():.4f} | G_loss: {g_loss.item():.4f} | "
-            f"E_real: {real_score_mean:.4f} | E_fake: {fake_score_mean:.4f} |  Gap/W_dist: {wasserstein_est:.4f} | {gap:.4f} | "
+            f"E_real: {real_score_mean:.4f} | E_fake: {fake_score_mean:.4f} |  Gap/W_dist: {wasserstein_est:.4f} "
             f"GP: {gp.item():.4f} | "
             f"||grad_D||: {gnorm_D:.4f} | ||grad_G||: {gnorm_G:.4f}"
         )
