@@ -3,7 +3,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
-from train_model import MODELS_DIR
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+MODELS_DIR = BASE_DIR / "out/models/"
 
 # Random seed
 # torch.manual_seed(156)
