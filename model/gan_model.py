@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
+import numpy as np
+from train_model import MODELS_DIR
 
 # Random seed
 # torch.manual_seed(156)
@@ -148,7 +150,10 @@ def train_gan(
     # Loss for vanilla GAN
     bce_loss = nn.BCEWithLogitsLoss()
 
+    best_w_dist = None
     for epoch in range(num_epochs):
+        real_scores_epoch = []
+        fake_scores_epoch = []
         for i, (real_x, s) in enumerate(dataloader):
             batch_size = real_x.size(0)
             real_x = real_x.to(device)
@@ -161,6 +166,9 @@ def train_gan(
 
                 d_real = discriminator(real_x, s)
                 d_fake = discriminator(fake_x, s)
+
+                real_scores_epoch.append(d_real.detach().cpu().numpy().mean())
+                fake_scores_epoch.append(d_fake.detach().cpu().numpy().mean())
 
                 # Wasserstein component
                 wasserstein_loss = -(d_real.mean() - d_fake.mean())
@@ -201,14 +209,13 @@ def train_gan(
             g_loss.backward()
             opt_g.step()
 
-        # ====== LOGGING (once per epoch) ======
+        # ====== TO REVISE - IS IT STILL VALID THE GRADIENT CALCULATION? ======
         with torch.no_grad():
             # Recompute for logging
             z = torch.randn(batch_size, z_dim, device=device)
             fake_x = generator(z, s)
             E_real = discriminator(real_x, s).mean().item()
             E_fake = discriminator(fake_x, s).mean().item()
-            gap = E_real - E_fake
 
             # gradient norms (after last step of the epoch)
             def grad_norm(params):
@@ -221,13 +228,24 @@ def train_gan(
             gnorm_D = grad_norm(discriminator.parameters())
             gnorm_G = grad_norm(generator.parameters())
 
+        real_score_mean = float(np.mean(real_scores_epoch))
+        fake_score_mean = float(np.mean(fake_scores_epoch)) 
+        wasserstein_est = real_score_mean - fake_score_mean
+
         print(
             f"Epoch {epoch+1}/{num_epochs} | "
             f"D_loss: {d_loss.item():.4f} | G_loss: {g_loss.item():.4f} | "
-            f"E_real: {E_real:.4f} | E_fake: {E_fake:.4f} | gap: {gap:.4f} | "
+            f"E_real: {real_score_mean:.4f} | E_fake: {fake_score_mean:.4f} |  Gap/W_dist: {wasserstein_est:.4f} | {gap:.4f} | "
             f"GP: {gp.item():.4f} | "
             f"||grad_D||: {gnorm_D:.4f} | ||grad_G||: {gnorm_G:.4f}"
         )
+
+        # If W_dist is less then last, save model
+        if (best_w_dist is None) or (wasserstein_est < best_w_dist):
+            print(f"New best W_dist: {wasserstein_est:.3f}. Saving models...")
+            best_w_dist = wasserstein_est
+            torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
+            torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
 
     return generator, discriminator
 

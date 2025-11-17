@@ -42,8 +42,8 @@ if __name__ == "__main__":
     G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN, out_dim=x_dim).to(DEVICE)
     D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN).to(DEVICE)
 
-    G.load_state_dict(torch.load(MODELS_DIR / "generator.pt", map_location=DEVICE))
-    D.load_state_dict(torch.load(MODELS_DIR / "discriminator.pt", map_location=DEVICE))
+    G.load_state_dict(torch.load(MODELS_DIR / "generator.pth", map_location=DEVICE))
+    D.load_state_dict(torch.load(MODELS_DIR / "discriminator.pth", map_location=DEVICE))
     G.eval()
     D.eval()
 
