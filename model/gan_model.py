@@ -154,7 +154,7 @@ def train_gan(
             real_x = real_x.to(device)
             s = s.to(device)
 
-            # ====== (1) Update Discriminator / Critic ======
+            # ====== (1) Update Critic ======
             for _ in range(critic_steps):
                 z = torch.randn(batch_size, z_dim, device=device)
                 fake_x = generator(z, s).detach()
@@ -162,53 +162,72 @@ def train_gan(
                 d_real = discriminator(real_x, s)
                 d_fake = discriminator(fake_x, s)
 
-                # Wasserstein loss
+                # Wasserstein component
                 wasserstein_loss = -(d_real.mean() - d_fake.mean())
 
                 # Gradient penalty
-                u = torch.rand(batch_size, 1, device=device)
-                u = u.expand_as(real_x)
-                x_hat = u * real_x + (1 - u) * fake_x
-                x_hat.requires_grad_(True)
-
+                u = torch.rand(batch_size, 1, device=device).expand_as(real_x)
+                x_hat = (u * real_x + (1 - u) * fake_x).requires_grad_(True)
                 d_hat = discriminator(x_hat, s)
-                gradients = torch.autograd.grad(
-                    outputs=d_hat,
-                    inputs=x_hat,
+                grad = torch.autograd.grad(
+                    d_hat, x_hat,
                     grad_outputs=torch.ones_like(d_hat),
-                    create_graph=True,
-                    retain_graph=True,
-                    only_inputs=True
+                    create_graph=True, retain_graph=True, only_inputs=True
                 )[0]
-                gradients = gradients.view(batch_size, -1)
-                gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+                grad = grad.view(batch_size, -1)
+                gp = ((grad.norm(2, dim=1) - 1)**2).mean()
 
-                # NB: Compared to the paper, here we minimize -loss instead of maximizing loss (eq. 15)
-                #     Thus, gradient penalty is added
-                d_loss = wasserstein_loss + lambda_gp * gradient_penalty
+                d_loss = wasserstein_loss + lambda_gp * gp
 
                 opt_d.zero_grad()
                 d_loss.backward()
+
+                # Gradient clipping (suggested by ChatGPT)
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=5)
+
                 opt_d.step()
 
             # ====== (2) Update Generator ======
             z = torch.randn(batch_size, z_dim, device=device)
             gen_x = generator(z, s)
+
             if wgan:
-                # Generator tries to maximize D(fake) -> minimize -D(fake)
                 g_loss = -discriminator(gen_x, s).mean()
             else:
-                # Vanilla GAN: want discriminator to predict 'real' for fakes
-                real_labels_for_generator = torch.ones(batch_size, device=device)
                 g_logits = discriminator(gen_x, s)
-                g_loss = bce_loss(g_logits, real_labels_for_generator)
+                g_loss = bce_loss(g_logits, torch.ones(batch_size, device=device))
 
             opt_g.zero_grad()
             g_loss.backward()
             opt_g.step()
 
-        # --- end epoch ---
-        print(f"Epoch {epoch+1}/{num_epochs}  |  D_loss: {d_loss.item():.4f}  G_loss: {g_loss.item():.4f}")
+        # ====== LOGGING (once per epoch) ======
+        with torch.no_grad():
+            # Recompute for logging
+            z = torch.randn(batch_size, z_dim, device=device)
+            fake_x = generator(z, s)
+            E_real = discriminator(real_x, s).mean().item()
+            E_fake = discriminator(fake_x, s).mean().item()
+            gap = E_real - E_fake
+
+            # gradient norms (after last step of the epoch)
+            def grad_norm(params):
+                total = 0.0
+                for p in params:
+                    if p.grad is not None:
+                        total += (p.grad.data.norm()**2).item()
+                return total**0.5
+
+            gnorm_D = grad_norm(discriminator.parameters())
+            gnorm_G = grad_norm(generator.parameters())
+
+        print(
+            f"Epoch {epoch+1}/{num_epochs} | "
+            f"D_loss: {d_loss.item():.4f} | G_loss: {g_loss.item():.4f} | "
+            f"E_real: {E_real:.4f} | E_fake: {E_fake:.4f} | gap: {gap:.4f} | "
+            f"GP: {gp.item():.4f} | "
+            f"||grad_D||: {gnorm_D:.4f} | ||grad_G||: {gnorm_G:.4f}"
+        )
 
     return generator, discriminator
 

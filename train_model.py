@@ -10,16 +10,16 @@ BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "out/models/"
 
 # Use OPTUNA for hyperparameter tuning: https://optuna.org/
-Z_DIM = 8               # Noise dimension. 25% - 50% of total dimensions
-HIDDEN = 208
+Z_DIM = 6               # Noise dimension. 25% - 50% of total dimensions
+HIDDEN = 256
 BATCH = 32
 EPOCHS = 100
-CRITIC_STEPS = 12
+CRITIC_STEPS = 13
 MARKET_DEPTH = 5
 SHUFFLE_DATA = True
-LAMBDA_GP = 18         # Increase to penalize discriminator more
+LAMBDA_GP = 8         # Increase to penalize discriminator more
 LR_D = 2e-4
-LR_G = 9e-5
+LR_G = 5e-5
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -71,42 +71,42 @@ class LOBGanDataset(Dataset):
 
 
 if __name__ == "__main__":
-    df_1 = pd.read_csv("out/data/20191001/FLEX_L2_SNAPSHOT.csv")
-    df_2 = pd.read_csv("out/data/20191002/FLEX_L2_SNAPSHOT.csv")
-    df_3 = pd.read_csv("out/data/20191003/FLEX_L2_SNAPSHOT.csv")
-    df_4 = pd.read_csv("out/data/20191004/FLEX_L2_SNAPSHOT.csv")
+    # List of CSV files
+    files = [
+        "out/data/20191001/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191002/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191003/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191004/FLEX_L2_SNAPSHOT.csv"
+    ]
 
+    dfs = []
+
+    for file in files:
+        df = pd.read_csv(file)
+
+        # Select only numeric columns for standardization
+        numeric_cols = df.select_dtypes(include='number').columns
+        numeric_df = df[numeric_cols]
+
+        # Standardize numeric columns
+        numeric_df = (numeric_df - numeric_df.mean()) / numeric_df.std()
+
+        # Reattach non-numeric columns (like time or date)
+        non_numeric_cols = [c for c in df.columns if c not in numeric_cols]
+        for c in non_numeric_cols:
+            numeric_df[c] = df[c]
+
+        dfs.append(numeric_df)
 
     # Concatenate all days
-    # lob_df = pd.concat([df_1, df_2, df_3, df_4])
-    lob_df = df_2
+    lob_df = pd.concat(dfs, ignore_index=True)
 
-    # Remove initial data points to limit effect of low liquidity
+    # Optional: remove initial rows to limit low liquidity effects
     # lob_df = lob_df.iloc[500:]
 
-    # Drop non-numeric columns for normalization
-    non_numeric_cols = [c for c in lob_df.columns if lob_df[c].dtype == 'object' or 'time' in c.lower() or 'date' in c.lower()]
-    numeric_df = lob_df.drop(columns=non_numeric_cols, errors="ignore")
-    raw_numeric_df = numeric_df.copy()
-
-    # Step 1: difference
-    first_state = numeric_df.iloc[0].values
-    # numeric_df = numeric_df.diff().dropna()
-
-    # Watch out: the last timestamp seems to behave weirdly
-    # Debug and check
-
-    # Normalize
-    mean = numeric_df.mean()
-    std = numeric_df.std()
-    numeric_df = (numeric_df - mean) / std
-
-    # Reattach time column
+    # Final check: convert 'time' column to datetime if exists
     if 'time' in lob_df.columns:
-        numeric_df['time'] = pd.to_datetime(lob_df['time'])
-
-    lob_df = numeric_df
-
+        lob_df['time'] = pd.to_datetime(lob_df['time'])
     dataset = LOBGanDataset(lob_df, market_depth=MARKET_DEPTH)
     loader = DataLoader(dataset, batch_size=BATCH, shuffle=SHUFFLE_DATA)
 
@@ -127,6 +127,7 @@ if __name__ == "__main__":
     torch.save(generator.state_dict(), MODELS_DIR / "generator.pt")
     torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pt")
 
+""""
     # Number of timestamps to simulate and compare to true ones
     time_index = 1000
     generated = []
@@ -183,7 +184,7 @@ if __name__ == "__main__":
     plot_real_vs_generated(numeric_df, df_gen, time_index)
 
     
-
+"""
 
 
 
