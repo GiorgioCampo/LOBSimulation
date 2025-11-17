@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent[1]
+BASE_DIR = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE_DIR / "out/models/"
 
 # Random seed
@@ -117,26 +117,9 @@ class Discriminator(nn.Module):
 # -----------------------
 # Training skeleton
 # -----------------------
-def train_gan(
-    *,
-    generator,
-    discriminator,
-    dataloader,
-    z_dim=32,
-    num_epochs=50,
-    device='cpu',
-    wgan=False,
-    critic_steps=5,
-    lr_g=1e-4,
-    lr_d=1e-4,
-    lambda_gp=10
-):
-    """
-    Training skeleton for vanilla GAN or WGAN.
-    - If wgan=True: use WGAN critic updates (no sigmoid), RMSprop or Adam can be used.
-    - Gradient clipping is applied to discriminator parameters (as requested).
-    """
-
+def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, device='cpu', wgan=False, critic_steps=5, lr_g=1e-4, lr_d=1e-4, 
+              lambda_gp=10):
+    
     generator.to(device)
     discriminator.to(device)
 
@@ -151,18 +134,21 @@ def train_gan(
         opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.5, 0.999))
 
     # Loss for vanilla GAN
-    bce_loss = nn.BCEWithLogitsLoss()
+    #bce_loss = nn.BCEWithLogitsLoss()
 
     best_w_dist = None
+    
     for epoch in range(num_epochs):
-        real_scores_epoch = []
-        fake_scores_epoch = []
+        d_losses, g_losses, gps = [], [], []
+        real_scores, fake_scores = [], []
+        gnorms_D, gnorms_G = [], []
+        
         for i, (real_x, s) in enumerate(dataloader):
             batch_size = real_x.size(0)
             real_x = real_x.to(device)
             s = s.to(device)
 
-            # ====== (1) Update Critic ======
+            # ====== Update Discriminator ======
             for _ in range(critic_steps):
                 z = torch.randn(batch_size, z_dim, device=device)
                 fake_x = generator(z, s).detach()
@@ -170,83 +156,70 @@ def train_gan(
                 d_real = discriminator(real_x, s)
                 d_fake = discriminator(fake_x, s)
 
-                real_scores_epoch.append(d_real.detach().cpu().numpy().mean())
-                fake_scores_epoch.append(d_fake.detach().cpu().numpy().mean())
-
-                # Wasserstein component
-                wasserstein_loss = -(d_real.mean() - d_fake.mean())
-
                 # Gradient penalty
                 u = torch.rand(batch_size, 1, device=device).expand_as(real_x)
                 x_hat = (u * real_x + (1 - u) * fake_x).requires_grad_(True)
                 d_hat = discriminator(x_hat, s)
+                
                 grad = torch.autograd.grad(
                     d_hat, x_hat,
                     grad_outputs=torch.ones_like(d_hat),
-                    create_graph=True, retain_graph=True, only_inputs=True
+                    create_graph=True, retain_graph=True
                 )[0]
-                grad = grad.view(batch_size, -1)
-                gp = ((grad.norm(2, dim=1) - 1)**2).mean()
+                gp = ((grad.view(batch_size, -1).norm(2, dim=1) - 1)**2).mean()
 
-                d_loss = wasserstein_loss + lambda_gp * gp
+                wasserstein = -(d_real.mean() - d_fake.mean())
+                d_loss = wasserstein + lambda_gp * gp
 
                 opt_d.zero_grad()
                 d_loss.backward()
-
+                
+                # CALCULATE BEFORE CLIPPING/STEPPING
+                gnorm_d = sum(p.grad.norm()**2 for p in discriminator.parameters() if p.grad is not None)**0.5
+                
                 # Gradient clipping (suggested by ChatGPT)
                 torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=5)
-
                 opt_d.step()
+                
+                # Store metrics
+                real_scores.append(d_real.mean().item())
+                fake_scores.append(d_fake.mean().item())
+                gps.append(gp.item())
+                d_losses.append(d_loss.item())
+                gnorms_D.append(gnorm_d.item())
 
-            # ====== (2) Update Generator ======
+            # ====== Update Generator ======
             z = torch.randn(batch_size, z_dim, device=device)
             gen_x = generator(z, s)
-
-            if wgan:
-                g_loss = -discriminator(gen_x, s).mean()
-            else:
-                g_logits = discriminator(gen_x, s)
-                g_loss = bce_loss(g_logits, torch.ones(batch_size, device=device))
+            g_loss = -discriminator(gen_x, s).mean()
 
             opt_g.zero_grad()
             g_loss.backward()
+            
+            # CALCULATE BEFORE STEPPING
+            gnorm_g = sum(p.grad.norm()**2 for p in generator.parameters() if p.grad is not None)**0.5
+            
             opt_g.step()
+            
+            g_losses.append(g_loss.item())
+            gnorms_G.append(gnorm_g.item())
 
-        # ====== TO REVISE - IS IT STILL VALID THE GRADIENT CALCULATION? ======
-        with torch.no_grad():
-            # Recompute for logging
-            z = torch.randn(batch_size, z_dim, device=device)
-            fake_x = generator(z, s)
-            E_real = discriminator(real_x, s).mean().item()
-            E_fake = discriminator(fake_x, s).mean().item()
-
-            # gradient norms (after last step of the epoch)
-            def grad_norm(params):
-                total = 0.0
-                for p in params:
-                    if p.grad is not None:
-                        total += (p.grad.data.norm()**2).item()
-                return total**0.5
-
-            gnorm_D = grad_norm(discriminator.parameters())
-            gnorm_G = grad_norm(generator.parameters())
-
-        real_score_mean = float(np.mean(real_scores_epoch))
-        fake_score_mean = float(np.mean(fake_scores_epoch)) 
-        wasserstein_est = real_score_mean - fake_score_mean
+        # Epoch summary
+        E_real = np.mean(real_scores)
+        E_fake = np.mean(fake_scores)
+        w_dist = E_real - E_fake
 
         print(
             f"Epoch {epoch+1}/{num_epochs} | "
-            f"D_loss: {d_loss.item():.4f} | G_loss: {g_loss.item():.4f} | "
-            f"E_real: {real_score_mean:.4f} | E_fake: {fake_score_mean:.4f} |  Gap/W_dist: {wasserstein_est:.4f} "
-            f"GP: {gp.item():.4f} | "
-            f"||grad_D||: {gnorm_D:.4f} | ||grad_G||: {gnorm_G:.4f}"
+            f"D_loss: {np.mean(d_losses):.4f} | G_loss: {np.mean(g_losses):.4f} | "
+            f"E_real: {E_real:.4f} | E_fake: {E_fake:.4f} | W_dist: {w_dist:.4f} "
+            f"GP: {np.mean(gps):.4f} | "
+            f"||grad_D||: {np.mean(gnorms_D):.4f} | ||grad_G||: {np.mean(gnorms_G):.4f}"
         )
 
-        # If W_dist is less then last, save model
-        if (best_w_dist is None) or (wasserstein_est < best_w_dist):
-            print(f"New best W_dist: {wasserstein_est:.3f}. Saving models...")
-            best_w_dist = wasserstein_est
+        if (best_w_dist is None) or (w_dist < best_w_dist):
+            print(f"New best W_dist: {w_dist:.3f}. Saving...")
+            best_w_dist = w_dist
             torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
             torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
 
