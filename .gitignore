@@ -5,3 +5,7 @@
 *.pt
 plots/
 generated_lob.csv
+venv/
+out/
+.vsocode/
+*.db

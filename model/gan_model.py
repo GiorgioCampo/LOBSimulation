@@ -118,8 +118,8 @@ def train_gan(
     device='cpu',
     wgan=False,
     critic_steps=5,
-    lr_g=1e-4,
-    lr_d=1e-4,
+    lr_g=1e-5,
+    lr_d=4e-4,
     lambda_gp=10
 ):
     """
@@ -144,7 +144,11 @@ def train_gan(
     # Loss for vanilla GAN
     bce_loss = nn.BCEWithLogitsLoss()
 
+    best_w_dist = None
     for epoch in range(num_epochs):
+        real_scores_epoch = []
+        fake_scores_epoch = []
+        gp_values_epoch   = []
         for i, (real_x, s) in enumerate(dataloader):
             batch_size = real_x.size(0)
             real_x = real_x.to(device)
@@ -157,6 +161,9 @@ def train_gan(
 
                 d_real = discriminator(real_x, s)
                 d_fake = discriminator(fake_x, s)
+
+                real_scores_epoch.append(d_real.detach().cpu().numpy().mean())
+                fake_scores_epoch.append(d_fake.detach().cpu().numpy().mean())
 
                 # Wasserstein loss
                 wasserstein_loss = -(d_real.mean() - d_fake.mean())
@@ -178,6 +185,7 @@ def train_gan(
                 )[0]
                 gradients = gradients.view(batch_size, -1)
                 gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+                gp_values_epoch.append(gradient_penalty.item())
 
                 # NB: Compared to the paper, here we minimize -loss instead of maximizing loss (eq. 15)
                 #     Thus, gradient penalty is added
@@ -203,8 +211,32 @@ def train_gan(
             g_loss.backward()
             opt_g.step()
 
-        # --- end epoch ---
-        print(f"Epoch {epoch+1}/{num_epochs}  |  D_loss: {d_loss.item():.4f}  G_loss: {g_loss.item():.4f}")
+        # Convert scores into tensors
+        import numpy as np
+       
+        # inside your epoch loop, after finishing all batches:
+        real_score_mean = float(np.mean(real_scores_epoch))
+        fake_score_mean = float(np.mean(fake_scores_epoch)) 
+        gp_mean         = float(np.mean(gp_values_epoch)) if len(gp_values_epoch) > 0 else 0.0
+
+        wasserstein_est = real_score_mean - fake_score_mean
+
+        print(
+            f"Epoch {epoch + 1}/{num_epochs} | "
+            f"D_loss: {d_loss:.4f}  "
+            f"G_loss: {g_loss:.4f} | "
+            f"realD: {real_score_mean:.3f}  " 
+            f"fakeD: {fake_score_mean:.3f}  "
+            f"W_dist: {wasserstein_est:.3f}  "
+            f"GP: {gp_mean:.3f}"
+        )
+
+        # If W_dist is less then last, save model
+        if (best_w_dist is None) or (wasserstein_est < best_w_dist):
+            print(f"New best W_dist: {wasserstein_est:.3f}. Saving models...")
+            best_w_dist = wasserstein_est
+            torch.save(generator.state_dict(), "generator.pth")
+            torch.save(discriminator.state_dict(), "discriminator.pth")
 
     return generator, discriminator
 

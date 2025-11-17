@@ -20,19 +20,29 @@ if __name__ == '__main__':
     D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN)
     G.to(device)
     D.to(device)
-    G.load_state_dict(torch.load(MODELS_DIR / "generator.pt"))
-    D.load_state_dict(torch.load(MODELS_DIR / "discriminator.pt"))
+    G.load_state_dict(torch.load(MODELS_DIR / "generator.pth"))
+    D.load_state_dict(torch.load(MODELS_DIR / "discriminator.pth"))
     G.eval()
     D.eval()
 
     generated = []
     with torch.no_grad():
-        current_s = dataset.S[-1].unsqueeze(0).to(device)
+        last_s = dataset.S[-1].unsqueeze(0).to(device)
+        last_snapshot = dataset.X[-1].unsqueeze(0).to(device)
+
         for _ in range(N_OUTPUT_ROWS):
             z = torch.randn(1, Z_DIM, device=device)
-            x_next = G(z, current_s)
-            generated.append(x_next.cpu().numpy().flatten())
-            current_s = x_next  # feed next state as new condition
+            x_next = G(z, last_s)
+
+            # ----------- FIX: DENORMALIZE -----------
+            x_denorm = x_next * dataset.std.to(device) + dataset.mean.to(device)
+            generated.append(x_denorm.cpu().numpy().flatten())
+
+            # compute Δ for next S
+            diff_next = x_next - last_snapshot
+
+            last_s = torch.cat([x_next, diff_next], dim=1)
+            last_snapshot = x_next
 
     # --- Keep only numeric L2 columns (exclude 'time') ---
     # TODO: THIS MUST BE REVISED
