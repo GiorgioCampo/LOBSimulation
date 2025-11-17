@@ -47,14 +47,13 @@ class LOBGanDataset(Dataset):
         # --- Keep only the last record for duplicate timestamps ---
         lob_df = lob_df.groupby(lob_df.index).last()
 
-        # --- Select L2 snapshot columns ---
-        cols = []
-        for side in ["bidPx", "askPx", "bidQty", "askQty"]:
-            for i in range(market_depth):
-                c = f"{side}_{i}"
-                if c in lob_df.columns:
-                    cols.append(c)
-        lob_df = lob_df[cols].astype(float).dropna()
+        # --- Select L2 snapshot columns in the SAME order as the input DataFrame ---
+        valid_cols = []
+        for c in lob_df.columns:
+            if any(c.startswith(prefix) for prefix in ["bidPx_", "bidQty_", "askPx_", "askQty_"]):
+                valid_cols.append(c)
+
+        lob_df = lob_df[valid_cols]
 
         # --- Build (S_t, X_{t+Δt}) pairs ---
         data = lob_df.values
