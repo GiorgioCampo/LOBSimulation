@@ -1,8 +1,9 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 import os
 
-def plot_real_vs_generated(lob_df, df_gen, save=True):
+def plot_real_vs_generated(lob_df, df_gen, time_index, save=True):
     real = lob_df.copy()
     if not isinstance(real.index, pd.DatetimeIndex):
         if "time" in real.columns:
@@ -25,10 +26,14 @@ def plot_real_vs_generated(lob_df, df_gen, save=True):
     #     out_dir="out/plots"
     # )
 
+    # Remove last timestamp (biased time at 19, probably consolidated final price)
+    real = real.iloc[:-1]
+    gen = gen.iloc[:-1]
+
     plt.figure()
-    plt.plot(real.index, real["bidPx_0"], label="Real")
     plt.plot(gen.index, gen["bidPx_0"], label="Generated", linestyle="--")
-    plt.axvline(real.index[-1], color="red", linestyle=":", label="Transition")
+    plt.plot(real.index, real["bidPx_0"], label="Real")
+    plt.axvline(real.index[-time_index], color="red", linestyle=":", label="Transition")
     plt.legend()
     plt.title("Real vs Generated continuation (bidPx_0)")
     plt.xlabel("Time")
@@ -36,6 +41,75 @@ def plot_real_vs_generated(lob_df, df_gen, save=True):
     plt.tight_layout()
     if save:
         plt.savefig("out/plots/real_vs_generated_bidPx0.pdf")
+    else:
+        plt.show()
+    plt.close()
+
+def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index, 
+                                ci_low=0.05, ci_high=0.95, column="bidPx_0",
+                                save=True):
+    """
+    lob_df       : real LOB dataframe
+    df_gen_list  : list of generated dataframes (length N paths)
+    time_index   : when the continuation begins
+    """
+
+    # --- Prepare REAL ---
+    real = lob_df.copy()
+    if not isinstance(real.index, pd.DatetimeIndex):
+        if "time" in real.columns:
+            real["time"] = pd.to_datetime(real["time"])
+            real = real.set_index("time")
+
+    # Drop last timestamp (your note)
+    real = real.iloc[:-1]
+
+    # --- Prepare GENERATED paths ---
+    dfs = []
+    for gen_df in df_gen_list:
+        gen = gen_df.copy()
+        if not isinstance(gen.index, pd.DatetimeIndex):
+            gen["time"] = pd.to_datetime(gen["time"])
+            gen = gen.set_index("time")
+        dfs.append(gen.iloc[:-1][column])  # keep only price column
+
+    # Stack into matrix: shape = (N_paths, T)
+    gen_matrix = np.vstack([g.values for g in dfs])
+
+    # Compute statistics
+    median = np.median(gen_matrix, axis=0)
+    low_band = np.quantile(gen_matrix, ci_low, axis=0)
+    high_band = np.quantile(gen_matrix, ci_high, axis=0)
+
+    # All generated paths share the same time index
+    t_gen = dfs[0].index
+
+    # --- Plot ---
+    os.makedirs("out/plots", exist_ok=True)
+
+    plt.figure(figsize=(11, 5))
+
+    # Confidence band
+    plt.fill_between(t_gen, low_band, high_band, 
+                     alpha=0.25, color="blue", label=f"{ci_low*100:.0f}-{ci_high*100:.0f}% band")
+
+    # Median line
+    plt.plot(t_gen, median, color="blue", linewidth=1.5, label="Generated median")
+
+    # Real L0 line
+    plt.plot(real.index, real[column], color="black", linewidth=1.2, label="Real")
+
+    # Transition marker
+    plt.axvline(real.index[-time_index], color="red", linestyle=":", label="Transition")
+
+    plt.title("Real vs Generated (Confidence Bands)")
+    plt.xlabel("Time")
+    plt.ylabel(column)
+    plt.legend()
+    plt.tight_layout()
+
+    if save:
+        plt.savefig("out/plots/real_vs_generated_conf_bands.pdf")
     else:
         plt.show()
     plt.close()

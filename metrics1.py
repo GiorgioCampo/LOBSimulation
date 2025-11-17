@@ -20,21 +20,26 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde, wasserstein_distance
 
+BASE_FOLDER = Path(__file__).resolve().parent
+DAY = "20191002"
+REAL_CSV = BASE_FOLDER / f"out/data/{DAY}/FLEX_L2_SNAPSHOT.csv"
+FAKE_CSV = BASE_FOLDER / f"generated_lob.csv"
+
 # =====================
 # CONFIGURATION
 # =====================
 class Config:
     """Centralized configuration"""
     # Paths
-    REAL_CSV: str = r"C:\Users\osull\OneDrive\Desktop\LOBSimulation\LOBSimulation\out\data\20191001\FLEX_L2_SNAPSHOT.csv"
-    FAKE_CSV: Optional[str] = None  # Set to path when generated data is ready
+    REAL_CSV: str = REAL_CSV
+    FAKE_CSV: Optional[str] = FAKE_CSV  # Set to path when generated data is ready
     OUTPUT_DIR: str = "./figs"
     
     # Plot settings
     GRID_COLS: int = 2
     DRAW_VLINE_ZERO: bool = True
     PLOT_CONDITIONAL_Q: bool = True      # Conditional Q distributions (like paper)
-    PLOT_ALL_LEVELS: bool = False        # All level marginals (optional)
+    PLOT_ALL_LEVELS: bool = True        # All level marginals (optional)
     PLOT_LOB_SHAPE: bool = True          # Average LOB shape
     
     # Conditional plot settings

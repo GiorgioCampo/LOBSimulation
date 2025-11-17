@@ -9,14 +9,17 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "out/models/"
 
+# Use OPTUNA for hyperparameter tuning: https://optuna.org/
 Z_DIM = 8               # Noise dimension. 25% - 50% of total dimensions
-HIDDEN = 256
-BATCH = 16
+HIDDEN = 208
+BATCH = 32
 EPOCHS = 100
-CRITIC_STEPS = 5
+CRITIC_STEPS = 12
 MARKET_DEPTH = 5
 SHUFFLE_DATA = True
-LAMBDA_GP = 15          # Increase to penalize discriminator more
+LAMBDA_GP = 18         # Increase to penalize discriminator more
+LR_D = 2e-4
+LR_G = 9e-5
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -76,11 +79,23 @@ if __name__ == "__main__":
 
 
     # Concatenate all days
-    lob_df = pd.concat([df_1]) # df_2, df_3, df_4
+    # lob_df = pd.concat([df_1, df_2, df_3, df_4])
+    lob_df = df_2
+
+    # Remove initial data points to limit effect of low liquidity
+    # lob_df = lob_df.iloc[500:]
 
     # Drop non-numeric columns for normalization
     non_numeric_cols = [c for c in lob_df.columns if lob_df[c].dtype == 'object' or 'time' in c.lower() or 'date' in c.lower()]
     numeric_df = lob_df.drop(columns=non_numeric_cols, errors="ignore")
+    raw_numeric_df = numeric_df.copy()
+
+    # Step 1: difference
+    first_state = numeric_df.iloc[0].values
+    # numeric_df = numeric_df.diff().dropna()
+
+    # Watch out: the last timestamp seems to behave weirdly
+    # Debug and check
 
     # Normalize
     mean = numeric_df.mean()
@@ -107,23 +122,27 @@ if __name__ == "__main__":
     D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN)
 
     generator, discriminator = train_gan(generator=G, discriminator=D, dataloader=loader, wgan=True, num_epochs=EPOCHS,
-              z_dim=Z_DIM, device=device, critic_steps=CRITIC_STEPS, lambda_gp=LAMBDA_GP)
+              z_dim=Z_DIM, device=device, critic_steps=CRITIC_STEPS, lambda_gp=LAMBDA_GP, lr_d=LR_D, lr_g=LR_G)
 
     # Save trained models
     torch.save(generator.state_dict(), MODELS_DIR / "generator.pt")
     torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pt")
 
+    # Number of timestamps to simulate and compare to true ones
+    time_index = 1000
     generated = []
+    
     with torch.no_grad():
-        current_s = dataset.S[-1].unsqueeze(0).to(device)
-        for _ in range(1500):
+        current_s = dataset.S[-time_index].unsqueeze(0).to(device)
+        first_s = current_s.values
+        for _ in range(time_index):
             z = torch.randn(1, Z_DIM, device=device)
             x_next = G(z, current_s)
             generated.append(x_next.cpu().numpy().flatten())
             current_s = x_next  # feed next state as new condition
 
     # --- Keep only numeric L2 columns (exclude 'time') ---
-    # TODO: THIS MUST BE REVISED
+    # TODO: THIS MUST BE REVISED / numeric_df or lob_df?
     numeric_cols = [c for c in lob_df.columns if not ('time' in c.lower() or 'date' in c.lower() or 'time_elapsed' in c.lower())]
     print(f"Numeric columns: {numeric_cols}")
     print(f"Total columns: {lob_df.columns}")
@@ -132,25 +151,37 @@ if __name__ == "__main__":
     df_gen = pd.DataFrame(generated, columns=numeric_cols)
 
     # --- Build timestamps spaced by 10 seconds ---
-    if isinstance(lob_df.index, pd.DatetimeIndex):
-        last_ts = lob_df.index[-1]
-    elif 'time' in lob_df.columns:
+    if isinstance(numeric_df.index, pd.DatetimeIndex):
+        last_ts = numeric_df.index[-time_index]
+    elif 'time' in numeric_df.columns:
         print("Using last 'time' column for timestamp generation.")
-        last_ts = pd.to_datetime(lob_df['time'].iloc[-1])
+        last_ts = pd.to_datetime(numeric_df['time'].iloc[-time_index])
     else:
         last_ts = pd.Timestamp.now()
 
-    timestamps = [last_ts + pd.Timedelta(seconds=10 * i) for i in range(1, 1500 + 1)]
+    timestamps = numeric_df["time"].iloc[-time_index:].tolist()
     
-    # Output in format hh:mm:ss:ms
-    timestamps = [ts.strftime("%H:%M:%S.%f")[:-3] for ts in timestamps]
-    df_gen.insert(0, "time", timestamps)  # insert as first column
+    # Determine correct baseline state
+    baseline_abs_state = raw_numeric_df.iloc[-time_index].values
+
+    # De-standardize differences
+    df_gen = df_gen * std + mean
+    numeric_df[numeric_cols] = numeric_df[numeric_cols] * std + mean
+
+    # --- DE-DIFFERENTIATE USING LOCAL BASELINE ---
+    # df_gen = df_gen.cumsum()
+    # df_gen = df_gen + baseline_abs_state   # <-- Use correct local first state
+    df_gen.insert(0, "time", timestamps) # insert as first column
+
+    # numeric_df[numeric_cols] = numeric_df[numeric_cols].cumsum()
+    # numeric_df[numeric_cols] = numeric_df[numeric_cols] + baseline_abs_state  # <-- same baseline
+
 
     # --- Save ---
     df_gen.to_csv("generated_lob.csv", index=False)
     print(f"Generated {len(df_gen)} rows → saved to generated_lob.csv")
 
-    plot_real_vs_generated(lob_df, df_gen)
+    plot_real_vs_generated(numeric_df, df_gen, time_index)
 
     
 

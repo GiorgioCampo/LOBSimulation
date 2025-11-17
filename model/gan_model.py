@@ -3,6 +3,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 
+# Random seed
+# torch.manual_seed(156)
+
+
 # -----------------------
 # Simple dataset stub
 # -----------------------
