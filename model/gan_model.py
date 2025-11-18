@@ -162,6 +162,7 @@ def train_gan(
         d_losses, g_losses, gps = [], [], []
         real_scores, fake_scores = [], []
         gnorms_D, gnorms_G = [], []
+        per_sample_norms_list = []
         
         for i, (real_x, s) in enumerate(dataloader):
             batch_size = real_x.size(0)
@@ -209,6 +210,9 @@ def train_gan(
                 d_losses.append(d_loss.item())
                 gnorms_D.append(gnorm_d.item())
 
+                # store per-sample norms for logging
+                per_sample_norms_list.append(grad.view(batch_size, -1).norm(2, dim=1).detach().cpu())
+
             # ====== Update Generator ======
             z = torch.randn(batch_size, z_dim, device=device)
             gen_x = generator(z, s)
@@ -244,40 +248,26 @@ def train_gan(
         # ============================================================
         # 1. GP diagnostics — recompute norms from the stored gp batch
         # ============================================================
-        # We must recompute from the *last critic update*, not reuse `grad`
-        u = torch.rand(batch_size, 1, device=device).expand_as(real_x)
-        x_hat_dbg = (u * real_x + (1 - u) * fake_x).requires_grad_(True)
-        d_hat_dbg = discriminator(x_hat_dbg, s)
-
-        grad_dbg = torch.autograd.grad(
-            d_hat_dbg, x_hat_dbg,
-            grad_outputs=torch.ones_like(d_hat_dbg),
-            retain_graph=False, create_graph=False
-        )[0]
-
-        gnorms = grad_dbg.view(batch_size, -1).norm(2, dim=1)
+        # Concatenate all per-sample norms
+        all_per_sample_norms = torch.cat(per_sample_norms_list)
 
         print(
-            f"[GP] mean={gnorms.mean():.4f}  "
-            f"std={gnorms.std():.4f}  "
-            f"min={gnorms.min():.4f}  max={gnorms.max():.4f}  "
-            f"pct_in_[0.8,1.2]={((gnorms>=0.8)&(gnorms<=1.2)).float().mean():.2f}"
+            f"[GP] mean={all_per_sample_norms.mean():.4f}  "
+            f"std={all_per_sample_norms.std():.4f}  "
+            f"min={all_per_sample_norms.min():.4f}  max={all_per_sample_norms.max():.4f}  "
+            f"pct_in_[0.8,1.2]={((all_per_sample_norms>=0.8)&(all_per_sample_norms<=1.2)).float().mean():.2f}"
         )
 
         # ======================================================
         # 2. Critic output stats — re-evaluate on fresh batches
         # ======================================================
-        with torch.no_grad():
-            d_real_dbg = discriminator(real_x, s)
-            d_fake_dbg = discriminator(fake_x, s)
-
         print(
-            f"[D] real: mean={d_real_dbg.mean():.2f}  std={d_real_dbg.std():.2f}  "
-            f"min={d_real_dbg.min():.2f}  max={d_real_dbg.max():.2f}"
+            f"[D] real: mean={np.mean(real_scores):.2f}  std={np.std(real_scores):.2f}  "
+            f"min={np.min(real_scores):.2f}  max={np.max(real_scores):.2f}"
         )
         print(
-            f"[D] fake: mean={d_fake_dbg.mean():.2f}  std={d_fake_dbg.std():.2f}  "
-            f"min={d_fake_dbg.min():.2f}  max={d_fake_dbg.max():.2f}"
+            f"[D] fake: mean={np.mean(fake_scores):.2f}  std={np.std(fake_scores):.2f}  "
+            f"min={np.min(fake_scores):.2f}  max={np.max(fake_scores):.2f}"
         )
 
         # ======================================
