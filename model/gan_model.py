@@ -1,9 +1,13 @@
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
+
+from pathlib import Path
 from torch.utils.data import DataLoader, Dataset
-import numpy as np
-from train_model import MODELS_DIR
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+MODELS_DIR = BASE_DIR / "out/models/"
 
 # Random seed
 # torch.manual_seed(156)
@@ -109,7 +113,8 @@ class Discriminator(nn.Module):
         h = self.activation(self.final_fc1(h))
         out = self.final_fc2(h)  # scalar
 
-        return out.squeeze(1)  # shape (batch,)
+        return out.squeeze(1)  # shape (batch,)   
+        
 
 # -----------------------
 # Training skeleton
@@ -126,7 +131,8 @@ def train_gan(
     critic_steps=5,
     lr_g=1e-4,
     lr_d=1e-4,
-    lambda_gp=10
+    lambda_gp=10,
+    save_model=False
 ):
     """
     Training skeleton for vanilla GAN or WGAN.
@@ -139,13 +145,13 @@ def train_gan(
 
     # Choice of optimizers:
     # - commonly: Adam for G, Adam or RMSprop for D (WGAN recommends RMSprop originally)
-    if wgan:
-        # WGAN commonly used RMSprop (original paper), but Adam also sometimes used
-        opt_d = optim.RMSprop(discriminator.parameters(), lr=lr_d)
-        opt_g = optim.RMSprop(generator.parameters(), lr=lr_g)
-    else:
-        opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.5, 0.999))
-        opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.5, 0.999))
+    # if wgan:
+    #     # WGAN commonly used RMSprop (original paper), but Adam also sometimes used
+    #     opt_d = optim.RMSprop(discriminator.parameters(), lr=lr_d)
+    #     opt_g = optim.RMSprop(generator.parameters(), lr=lr_g)
+    # else:
+    opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.5, 0.999))
+    opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.5, 0.999))
 
     # Loss for vanilla GAN
     bce_loss = nn.BCEWithLogitsLoss()
@@ -154,6 +160,7 @@ def train_gan(
     for epoch in range(num_epochs):
         real_scores_epoch = []
         fake_scores_epoch = []
+
         for i, (real_x, s) in enumerate(dataloader):
             batch_size = real_x.size(0)
             real_x = real_x.to(device)
@@ -232,18 +239,20 @@ def train_gan(
         fake_score_mean = float(np.mean(fake_scores_epoch)) 
         wasserstein_est = real_score_mean - fake_score_mean
 
+        # TODO: Add printing of W_dist for single column (bid and ask q / px each level)
+        #       To check if there's a problem with a specific one
         print(
             f"Epoch {epoch+1}/{num_epochs} | "
             f"D_loss: {d_loss.item():.4f} | G_loss: {g_loss.item():.4f} | "
-            f"E_real: {real_score_mean:.4f} | E_fake: {fake_score_mean:.4f} |  Gap/W_dist: {wasserstein_est:.4f} | {gap:.4f} | "
+            f"E_real: {real_score_mean:.4f} | E_fake: {fake_score_mean:.4f} | Gap/W_dist: {wasserstein_est:.4f} | "
             f"GP: {gp.item():.4f} | "
             f"||grad_D||: {gnorm_D:.4f} | ||grad_G||: {gnorm_G:.4f}"
         )
 
         # If W_dist is less then last, save model
-        if (best_w_dist is None) or (wasserstein_est < best_w_dist):
+        if save_model and ((best_w_dist is None) or (abs(wasserstein_est) < best_w_dist)):
             print(f"New best W_dist: {wasserstein_est:.3f}. Saving models...")
-            best_w_dist = wasserstein_est
+            best_w_dist = abs(wasserstein_est)
             torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
             torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
 
