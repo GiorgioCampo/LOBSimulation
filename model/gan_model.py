@@ -5,8 +5,9 @@ import torch.optim as optim
 
 from pathlib import Path
 from torch.utils.data import DataLoader, Dataset
-import numpy as np
-from train_model import MODELS_DIR
+
+BASE_DIR = Path(__file__).resolve().parents[1]
+MODELS_DIR = BASE_DIR / "out/models/"
 
 # Random seed
 # torch.manual_seed(156)
@@ -172,6 +173,7 @@ def train_gan(
                 z = torch.randn(batch_size, z_dim, device=device)
                 fake_x = generator(z, s).detach()
 
+                # Shouldnt we use the abs value? Otherwise positive and negative values will cancel each other out
                 d_real = discriminator(real_x, s)
                 d_fake = discriminator(fake_x, s)
 
@@ -187,7 +189,7 @@ def train_gan(
                 )[0]
                 gp = ((grad.view(batch_size, -1).norm(2, dim=1) - 1)**2).mean()
 
-                wasserstein = -(d_real.mean() - d_fake.mean())
+                wasserstein = - (d_real.mean() - d_fake.mean())
                 d_loss = wasserstein + lambda_gp * gp
 
                 opt_d.zero_grad()
@@ -197,7 +199,7 @@ def train_gan(
                 gnorm_d = sum(p.grad.norm()**2 for p in discriminator.parameters() if p.grad is not None)**0.5
                 
                 # Gradient clipping (suggested by ChatGPT)
-                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=5)
+                # torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=5)
                 opt_d.step()
                 
                 # Store metrics
@@ -220,43 +222,81 @@ def train_gan(
             
             opt_g.step()
 
-        # ====== TO REVISE - IS IT STILL VALID THE GRADIENT CALCULATION? ======
-        with torch.no_grad():
-            # Recompute for logging
-            z = torch.randn(batch_size, z_dim, device=device)
-            fake_x = generator(z, s)
-            E_real = discriminator(real_x, s).mean().item()
-            E_fake = discriminator(fake_x, s).mean().item()
+         
+            g_losses.append(g_loss.item())
+            gnorms_G.append(gnorm_g.item())
 
-            # gradient norms (after last step of the epoch)
-            def grad_norm(params):
-                total = 0.0
-                for p in params:
-                    if p.grad is not None:
-                        total += (p.grad.data.norm()**2).item()
-                return total**0.5
+        # =======================
+        # Epoch summary metrics
+        # =======================
+        E_real = np.mean(real_scores)
+        E_fake = np.mean(fake_scores)
+        w_dist = E_real - E_fake
 
-            gnorm_D = grad_norm(discriminator.parameters())
-            gnorm_G = grad_norm(generator.parameters())
-
-        real_score_mean = float(np.mean(real_scores_epoch))
-        fake_score_mean = float(np.mean(fake_scores_epoch)) 
-        wasserstein_est = real_score_mean - fake_score_mean
-
-        # TODO: Add printing of W_dist for single column (bid and ask q / px each level)
-        #       To check if there's a problem with a specific one
         print(
             f"Epoch {epoch+1}/{num_epochs} | "
             f"D_loss: {np.mean(d_losses):.4f} | G_loss: {np.mean(g_losses):.4f} | "
-            f"E_real: {E_real:.4f} | E_fake: {E_fake:.4f} | W_dist: {w_dist:.4f} "
+            f"E_real: {E_real:.4f} | E_fake: {E_fake:.4f} | W_dist: {w_dist:.4f} | "
             f"GP: {np.mean(gps):.4f} | "
             f"||grad_D||: {np.mean(gnorms_D):.4f} | ||grad_G||: {np.mean(gnorms_G):.4f}"
         )
 
+        # ============================================================
+        # 1. GP diagnostics — recompute norms from the stored gp batch
+        # ============================================================
+        # We must recompute from the *last critic update*, not reuse `grad`
+        u = torch.rand(batch_size, 1, device=device).expand_as(real_x)
+        x_hat_dbg = (u * real_x + (1 - u) * fake_x).requires_grad_(True)
+        d_hat_dbg = discriminator(x_hat_dbg, s)
+
+        grad_dbg = torch.autograd.grad(
+            d_hat_dbg, x_hat_dbg,
+            grad_outputs=torch.ones_like(d_hat_dbg),
+            retain_graph=False, create_graph=False
+        )[0]
+
+        gnorms = grad_dbg.view(batch_size, -1).norm(2, dim=1)
+
+        print(
+            f"[GP] mean={gnorms.mean():.4f}  "
+            f"std={gnorms.std():.4f}  "
+            f"min={gnorms.min():.4f}  max={gnorms.max():.4f}  "
+            f"pct_in_[0.8,1.2]={((gnorms>=0.8)&(gnorms<=1.2)).float().mean():.2f}"
+        )
+
+        # ======================================================
+        # 2. Critic output stats — re-evaluate on fresh batches
+        # ======================================================
+        with torch.no_grad():
+            d_real_dbg = discriminator(real_x, s)
+            d_fake_dbg = discriminator(fake_x, s)
+
+        print(
+            f"[D] real: mean={d_real_dbg.mean():.2f}  std={d_real_dbg.std():.2f}  "
+            f"min={d_real_dbg.min():.2f}  max={d_real_dbg.max():.2f}"
+        )
+        print(
+            f"[D] fake: mean={d_fake_dbg.mean():.2f}  std={d_fake_dbg.std():.2f}  "
+            f"min={d_fake_dbg.min():.2f}  max={d_fake_dbg.max():.2f}"
+        )
+
+        # ======================================
+        # 3. Generator output magnitude checks
+        # ======================================
+        with torch.no_grad():
+            z_dbg = torch.randn(batch_size, z_dim, device=device)
+            gen_dbg = generator(z_dbg, s)
+
+        print(
+            f"[GEN] abs_max={gen_dbg.abs().max().item():.3e}  "
+            f"mean={gen_dbg.mean().item():.3e}  std={gen_dbg.std().item():.3e}"
+        )
+
+
         # If W_dist is less then last, save model
-        if save_model and ((best_w_dist is None) or (abs(wasserstein_est) < best_w_dist)):
-            print(f"New best W_dist: {wasserstein_est:.3f}. Saving models...")
-            best_w_dist = abs(wasserstein_est)
+        if save_model and ((best_w_dist is None) or (abs(w_dist) < best_w_dist)):
+            print(f"New best W_dist: {w_dist:.3f}. Saving models...")
+            best_w_dist = abs(w_dist)
             torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
             torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
 

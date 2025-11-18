@@ -86,5 +86,10 @@ if __name__ == "__main__":
     lob_df[numeric_cols] = lob_df[numeric_cols] * std + mean
 
     # ------------------- PLOT -------------------
-    plot_real_vs_generated_conf(lob_df, df_gen_list, time_index=N_OUTPUT_ROWS, save=True)
+    columns = [
+        "bidPx_0", "bidPx_1", "bidPx_2", "bidPx_3", "bidPx_4",
+        "askPx_0", "askPx_1", "askPx_2", "askPx_3", "askPx_4"
+    ]
+    for column in columns:
+        plot_real_vs_generated_conf(lob_df, df_gen_list, time_index=N_OUTPUT_ROWS, save=True, column=column)
     print(f"Generated {N_PATHS} paths, each with {N_OUTPUT_ROWS} timesteps → plot saved.")
