@@ -1,27 +1,32 @@
 # dataset_lob_gan.py
 import torch
-from torch.utils.data import Dataset, DataLoader
-from pathlib import Path
-import pandas as pd
 import numpy as np
+import pandas as pd
+from typing import List
+from pathlib import Path
+from torch.utils.data import Dataset, DataLoader
 
 from model.gan_model import train_gan, Generator, Discriminator
-from plots import plot_real_vs_generated
+from plots import plot_epochs_evolution
 
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "out/models/"
 
 # Use OPTUNA for hyperparameter tuning: https://optuna.org/
-Z_DIM = 15               # Noise dimension. 25% - 50% of total dimensions
-HIDDEN = 128
-BATCH = 32
-EPOCHS = 150
-CRITIC_STEPS = 18
-MARKET_DEPTH = 5
+Z_DIM = 6               # Noise dimension. 25% - 50% of total dimensions
+HIDDEN = 64
+BATCH = 16
+EPOCHS = 500
+CRITIC_STEPS_INITIAL = 10
+CRITIC_STEPS_FINAL = 5
+GAMMA = 0.9            # Decay rate for critic steps
+MARKET_DEPTH = 3
 SHUFFLE_DATA = True
-LAMBDA_GP = 3         # Increase to penalize discriminator more
-LR_D = 8e-4
-LR_G = 1e-4
+LAMBDA_GP = 10         # Increase to penalize discriminator more
+LR_D = 6e-5
+LR_G = 2e-5
+USE_DIFFS = False
+INCLUDE_DIFFS = False
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -29,97 +34,160 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ===============================================================
 #                      DATASET (NEW)
 # ===============================================================
-class LOBGanDataset(Dataset):
+class LOBGANDataset(Dataset):
     """
-    - Accepts raw L2_SNAPSHOT df (possibly containing time column)
-    - Keeps only last record per timestamp
-    - Extracts numeric L2 columns
-    - Normalizes inside the dataset
-    - Adds first-order differences (Δ snapshot)
-    - Returns (X_next, S_curr)
+    Limit Order Book Dataset with proper preprocessing:
+    1. Loads multiple CSV files (one per day)
+    2. Optionally applies differentiation PER FILE (to avoid cross-day artifacts)
+    3. Concatenates all files
+    4. Standardizes the concatenated data globally
+    5. Filters L2 columns and prepares (X_next, S_curr) pairs
     """
 
-    def __init__(self, lob_df: pd.DataFrame, market_depth: int = 5):
-        super().__init__()
+    def __init__(
+        self,
+        file_paths: List[str],
+        market_depth: int = 5,
+        differentiate: bool = False,
+        include_diffs_in_state: bool = False,
+    ):
+        """
+        Args:
+            file_paths: List of CSV file paths (one per day)
+            market_depth: Number of price levels to include (0 to market_depth-1)
+            differentiate: If True, replace data with first-order differences per file
+            include_diffs_in_state: If True, augment state S with differences [snapshot, diff]
+        """
+        self.market_depth = market_depth
+        self.differentiate = differentiate
+        self.include_diffs_in_state = include_diffs_in_state
 
-        # ------------------------------
-        # Index handling
-        # ------------------------------
-        if not isinstance(lob_df.index, pd.DatetimeIndex):
-            if "time" in lob_df.columns:
-                lob_df["time"] = pd.to_datetime(lob_df["time"])
-                lob_df = lob_df.set_index("time")
+        # Load and preprocess data
+        lob_df = self._load_and_preprocess(file_paths)
+
+        # Convert to torch tensors
+        self._build_tensors(lob_df)
+
+        print(f"Dataset built: S={self.S.shape}, X={self.X.shape}")
+
+    def _load_and_preprocess(self, file_paths: List[str]) -> pd.DataFrame:
+        """Load files, optionally differentiate per file, concatenate, and standardize."""
+        processed_dfs = []
+
+        for file_path in file_paths:
+            df = pd.read_csv(file_path)
+            
+            # Handle time column
+            if 'time' in df.columns:
+                df['time'] = pd.to_datetime(df['time'])
+                df = df.set_index('time')
+            
+            # Keep only last record per timestamp
+            df = df.sort_index()
+            df = df.groupby(df.index).last()
+
+            # Separate numeric and non-numeric columns
+            numeric_cols = df.select_dtypes(include='number').columns.tolist()
+            non_numeric_cols = [c for c in df.columns if c not in numeric_cols]
+
+            # Apply differentiation PER FILE if requested
+            if self.differentiate:
+                numeric_df = df[numeric_cols].diff().fillna(0)
             else:
-                raise ValueError("Input must have DatetimeIndex or a 'time' column")
+                numeric_df = df[numeric_cols].copy()
 
-        lob_df = lob_df.sort_index()
+            # Reattach non-numeric columns
+            for col in non_numeric_cols:
+                numeric_df[col] = df[col]
 
-        # keep last record per timestamp
-        lob_df = lob_df.groupby(lob_df.index).last()
+            processed_dfs.append(numeric_df)
 
-        # --- Select L2 snapshot columns in the SAME order as the input DataFrame ---
+        # Concatenate all files
+        combined_df = pd.concat(processed_dfs, ignore_index=False)
+
+        # Standardize globally AFTER concatenation
+        numeric_cols = combined_df.select_dtypes(include='number').columns.tolist()
+        combined_df[numeric_cols] = (
+            combined_df[numeric_cols] - combined_df[numeric_cols].mean()
+        ) / (combined_df[numeric_cols].std() + 1e-8)
+
+        return combined_df
+
+    def _build_tensors(self, lob_df: pd.DataFrame):
+        """Extract L2 columns and build training tensors."""
+        # Select L2 snapshot columns in order
         valid_cols = []
-        for c in lob_df.columns:
-            if any(c.startswith(prefix) for prefix in ["bidPx_", "bidQty_", "askPx_", "askQty_"]):
-                valid_cols.append(c)
+        for col in lob_df.columns:
+            if any(col.startswith(prefix) for prefix in ["bidPx_", "bidQty_", "askPx_", "askQty_"]):
+                level = int(col.split('_')[-1])
+                if level < self.market_depth:
+                    valid_cols.append(col)
 
+        print(f"Selected columns: {valid_cols}")
         lob_df = lob_df[valid_cols]
 
-        # Convert to numpy for speed
+        # Convert to numpy
         mat = lob_df.values.astype(np.float32)
 
-        # ------------------------------
-        # Normalize inside dataset
-        # ------------------------------
-        mu = mat.mean(axis=0, keepdims=True)
-        sigma = mat.std(axis=0, keepdims=True) + 1e-8
-        mat_norm = (mat - mu) / sigma
+        # Build state representation
+        if self.include_diffs_in_state:
+            # Compute differences for state augmentation
+            diff = np.diff(mat, axis=0)
+            diff = np.concatenate([np.zeros_like(diff[:1]), diff], axis=0)
+            S = np.concatenate([mat, diff], axis=1)
+        else:
+            S = mat
 
-        # store mean/std for later denorm if needed
-        self.mean = torch.tensor(mu.flatten(), dtype=torch.float32)
-        self.std = torch.tensor(sigma.flatten(), dtype=torch.float32)
-
-        # ------------------------------
-        # First-order differences
-        # ------------------------------
-        diff = np.diff(mat_norm, axis=0)
-        diff = np.concatenate([np.zeros_like(diff[:1]), diff], axis=0)
-
-        # final augmented state S_t = [snapshot, diff]
-        S = np.concatenate([mat_norm, diff], axis=1)
-
-        # next state X_{t+1}
-        X = mat_norm[1:]
-        S = S[:-1]
+        # Create (X_next, S_curr) pairs
+        X = mat[1:]  # Next snapshot
+        S = S[:-1]   # Current state
 
         self.S = torch.tensor(S, dtype=torch.float32)
         self.X = torch.tensor(X, dtype=torch.float32)
-
-        print(f"Dataset built: S={self.S.shape}, X={self.X.shape}")
 
     def __len__(self):
         return len(self.X)
 
     def __getitem__(self, idx):
+        """Returns (X_next, S_curr) pair."""
         return self.X[idx], self.S[idx]
-
 
 # ===============================================================
 #                      TRAINING ENTRY POINT
 # ===============================================================
 if __name__ == "__main__":
-    df_1 = pd.read_csv("out/data/20191001/FLEX_L2_SNAPSHOT.csv")
-    # df_2 = pd.read_csv("out/data/20191002/FLEX_L2_SNAPSHOT.csv")
-    # df_3 = pd.read_csv("out/data/20191003/FLEX_L2_SNAPSHOT.csv")
-    # df_4 = pd.read_csv("out/data/20191004/FLEX_L2_SNAPSHOT.csv")
 
-    # Concatenate all days
-    lob_df = pd.concat([df_1], ignore_index=True) 
+    files = [
+        "out/data/20191001/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191002/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191003/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191004/FLEX_L2_SNAPSHOT.csv"
+    ]
 
-    # Final check: convert 'time' column to datetime if exists
-    if 'time' in lob_df.columns:
-        lob_df['time'] = pd.to_datetime(lob_df['time'])
-    dataset = LOBGanDataset(lob_df, market_depth=MARKET_DEPTH)
+    # Option 1: Raw snapshots, standardized
+    dataset = LOBGANDataset(
+        file_paths=files,
+        market_depth=MARKET_DEPTH,
+        differentiate=USE_DIFFS,
+        include_diffs_in_state=INCLUDE_DIFFS
+    )
+
+    # # Option 2: First-order differences (per day), standardized
+    # dataset = LOBGANDataset(
+    #     file_paths=files,
+    #     market_depth=MARKET_DEPTH,
+    #     differentiate=True,
+    #     include_diffs_in_state=False
+    # )
+
+    # # Option 3: Raw snapshots with differences augmented in state
+    # dataset = LOBGANDataset(
+    #     file_paths=files,
+    #     market_depth=MARKET_DEPTH,
+    #     differentiate=False,
+    #     include_diffs_in_state=True
+    # )
+    
     loader = DataLoader(dataset, batch_size=BATCH, shuffle=SHUFFLE_DATA)
 
     x_dim = dataset.X.shape[1]
@@ -128,72 +196,24 @@ if __name__ == "__main__":
     G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN, out_dim=x_dim)
     D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN)
 
-    generator, discriminator = train_gan(generator=G, discriminator=D, dataloader=loader, wgan=True, num_epochs=EPOCHS,
-              z_dim=Z_DIM, device=device, critic_steps=CRITIC_STEPS, lambda_gp=LAMBDA_GP, lr_d=LR_D, lr_g=LR_G)
+    if USE_DIFFS:
+        model_name = "diffs"
+    elif INCLUDE_DIFFS:
+        model_name = "augmented"
+    else:
+        model_name = "raw"
+
+    generator, discriminator, d_loss, g_loss, w_dist = train_gan(generator=G, discriminator=D, dataloader=loader, wgan=True, num_epochs=EPOCHS,
+              z_dim=Z_DIM, device=device, critic_steps_initial=CRITIC_STEPS_INITIAL, critic_steps_final=CRITIC_STEPS_FINAL,
+              gamma=GAMMA, lambda_gp=LAMBDA_GP, lr_d=LR_D, lr_g=LR_G, save_model=True, model_name=model_name)
 
     # Save trained models
-    torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
-    torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
+    torch.save(generator.state_dict(), MODELS_DIR / f"generator_{model_name}.pth")
+    torch.save(discriminator.state_dict(), MODELS_DIR / f"discriminator_{model_name}.pth")
 
-"""
-    # Number of timestamps to simulate and compare to true ones
-    time_index = 1000
-    generated = []
+    # Plot d_loss, g_loss, w_dist and save them
+    plot_epochs_evolution(d_loss, "Discriminator loss")
+    plot_epochs_evolution(g_loss, "Generator loss")
+    plot_epochs_evolution(w_dist, "Wasserstein distance")
     
-    with torch.no_grad():
-        current_s = dataset.S[-time_index].unsqueeze(0).to(device)
-        first_s = current_s.values
-        for _ in range(time_index):
-            z = torch.randn(1, Z_DIM, device=device)
-            x_next = G(z, curr_s)
-            generated.append(x_next.cpu().numpy().flatten())
-            curr_s = torch.cat([x_next, torch.zeros_like(x_next)], dim=1)
-
-    # --- Keep only numeric L2 columns (exclude 'time') ---
-    # TODO: THIS MUST BE REVISED / numeric_df or lob_df?
-    numeric_cols = [c for c in lob_df.columns if not ('time' in c.lower() or 'date' in c.lower() or 'time_elapsed' in c.lower())]
-    print(f"Numeric columns: {numeric_cols}")
-    print(f"Total columns: {lob_df.columns}")
-    print(f"Generated columns: {generated[0].shape}")
-
-    df_gen = pd.DataFrame(generated, columns=numeric_cols)
-
-    # --- Build timestamps spaced by 10 seconds ---
-    if isinstance(numeric_df.index, pd.DatetimeIndex):
-        last_ts = numeric_df.index[-time_index]
-    elif 'time' in numeric_df.columns:
-        print("Using last 'time' column for timestamp generation.")
-        last_ts = pd.to_datetime(numeric_df['time'].iloc[-time_index])
-    else:
-        last_ts = pd.Timestamp.now()
-
-    timestamps = numeric_df["time"].iloc[-time_index:].tolist()
-    
-    # Determine correct baseline state
-    baseline_abs_state = raw_numeric_df.iloc[-time_index].values
-
-    # De-standardize differences
-    df_gen = df_gen * std + mean
-    numeric_df[numeric_cols] = numeric_df[numeric_cols] * std + mean
-
-    # --- DE-DIFFERENTIATE USING LOCAL BASELINE ---
-    # df_gen = df_gen.cumsum()
-    # df_gen = df_gen + baseline_abs_state   # <-- Use correct local first state
-    df_gen.insert(0, "time", timestamps) # insert as first column
-
-    # numeric_df[numeric_cols] = numeric_df[numeric_cols].cumsum()
-    # numeric_df[numeric_cols] = numeric_df[numeric_cols] + baseline_abs_state  # <-- same baseline
-
-
-    df_gen.to_csv("generated_lob.csv", index=False)
-    print("Saved generated_lob.csv")
-
-    plot_real_vs_generated(numeric_df, df_gen, time_index)
-
-    
-"""
-
-
-
-
     

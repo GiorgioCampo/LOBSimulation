@@ -109,7 +109,18 @@ def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index,
     plt.tight_layout()
 
     if save:
-        plt.savefig("out/plots/real_vs_generated_conf_bands.pdf")
+        plt.savefig(f"out/plots/real_vs_generated_conf_bands_{column}.pdf")
     else:
         plt.show()
+    plt.close()
+
+
+def plot_epochs_evolution(metric, metric_name):
+    plt.figure(figsize=(11, 5))
+    plt.plot(metric)
+    plt.title("Epochs evolution")
+    plt.xlabel("Epoch")
+    plt.ylabel(f"{metric_name}")
+    plt.tight_layout()
+    plt.savefig(f"out/plots/{metric_name}_evolution.pdf")
     plt.close()

@@ -128,11 +128,15 @@ def train_gan(
     num_epochs=50,
     device='cpu',
     wgan=False,
-    critic_steps=5,
+    critic_steps_initial=5,
+    critic_steps_final=1,
+    gamma=0.1,
     lr_g=1e-4,
     lr_d=1e-4,
     lambda_gp=10,
-    save_model=False
+    save_model=False,
+    save_every=10,
+    model_name=""
 ):
     """
     Training skeleton for vanilla GAN or WGAN.
@@ -150,15 +154,21 @@ def train_gan(
     #     opt_d = optim.RMSprop(discriminator.parameters(), lr=lr_d)
     #     opt_g = optim.RMSprop(generator.parameters(), lr=lr_g)
     # else:
-    opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.5, 0.999))
-    opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.5, 0.999))
+    opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.0, 0.9))
+    opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.0, 0.9))
 
     # Loss for vanilla GAN
     #bce_loss = nn.BCEWithLogitsLoss()
 
     best_w_dist = None
+    g_loss_history = []
+    d_loss_history = []
+    w_dist_history = []
     
     for epoch in range(num_epochs):
+
+        critic_steps = int(max(critic_steps_final, critic_steps_initial * gamma ** (epoch)))
+
         d_losses, g_losses, gps = [], [], []
         real_scores, fake_scores = [], []
         gnorms_D, gnorms_G = [], []
@@ -282,15 +292,23 @@ def train_gan(
             f"mean={gen_dbg.mean().item():.3e}  std={gen_dbg.std().item():.3e}"
         )
 
+        print("Critic Steps used: ", critic_steps)
+
+        # Append global metrics for later plot
+        d_loss_history.append(np.mean(d_losses))
+        g_loss_history.append(np.mean(g_losses))
+        w_dist_history.append(w_dist)
 
         # If W_dist is less then last, save model
-        if save_model and ((best_w_dist is None) or (abs(w_dist) < best_w_dist)):
-            print(f"New best W_dist: {w_dist:.3f}. Saving models...")
-            best_w_dist = abs(w_dist)
-            torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
-            torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
+        # if save_model and ((best_w_dist is None) or (abs(w_dist) < best_w_dist)):
+        if save_model and epoch % save_every == 0:
+            # print(f"New best W_dist: {w_dist:.3f}. Saving models...")
+            # best_w_dist = abs(w_dist)
+            print(f"Saving models...")
+            torch.save(generator.state_dict(), MODELS_DIR / f"generator_{model_name}.pth")
+            torch.save(discriminator.state_dict(), MODELS_DIR / f"discriminator_{model_name}.pth")
 
-    return generator, discriminator
+    return generator, discriminator, d_loss_history, g_loss_history, w_dist_history
 
 # -----------------------
 # Example usage
