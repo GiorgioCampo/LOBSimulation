@@ -12,16 +12,16 @@ BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "out/models/"
 
 # Use OPTUNA for hyperparameter tuning: https://optuna.org/
-Z_DIM = 15               # Noise dimension. 25% - 50% of total dimensions
-HIDDEN = 128
-BATCH = 32
-EPOCHS = 150
-CRITIC_STEPS = 18
-MARKET_DEPTH = 5
+Z_DIM = 15             # Noise dimension. 25% - 50% of total dimensions
+HIDDEN = 64
+BATCH = 4
+EPOCHS = 500
+CRITIC_STEPS = 4
+MARKET_DEPTH = 3
 SHUFFLE_DATA = True
-LAMBDA_GP = 3         # Increase to penalize discriminator more
-LR_D = 8e-4
-LR_G = 1e-4
+LAMBDA_GP = 10        # Increase to penalize discriminator more
+LR_D = 6e-5
+LR_G = 2e-5
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -42,6 +42,8 @@ class LOBGanDataset(Dataset):
     def __init__(self, lob_df: pd.DataFrame, market_depth: int = 5):
         super().__init__()
 
+        self.market_depth = market_depth
+
         # ------------------------------
         # Index handling
         # ------------------------------
@@ -60,7 +62,7 @@ class LOBGanDataset(Dataset):
         # --- Select L2 snapshot columns in the SAME order as the input DataFrame ---
         valid_cols = []
         for c in lob_df.columns:
-            if any(c.startswith(prefix) for prefix in ["bidPx_", "bidQty_", "askPx_", "askQty_"]):
+            if any(c.startswith(prefix) for prefix in ["bidPx_", "bidQty_", "askPx_", "askQty_"]) and c[-1].isdigit() and int(c[-1]) <= market_depth:
                 valid_cols.append(c)
 
         lob_df = lob_df[valid_cols]
@@ -107,34 +109,52 @@ class LOBGanDataset(Dataset):
 # ===============================================================
 #                      TRAINING ENTRY POINT
 # ===============================================================
+import sys 
+import os
+
 if __name__ == "__main__":
     df_1 = pd.read_csv("out/data/20191001/FLEX_L2_SNAPSHOT.csv")
-    # df_2 = pd.read_csv("out/data/20191002/FLEX_L2_SNAPSHOT.csv")
-    # df_3 = pd.read_csv("out/data/20191003/FLEX_L2_SNAPSHOT.csv")
-    # df_4 = pd.read_csv("out/data/20191004/FLEX_L2_SNAPSHOT.csv")
+    df_2 = pd.read_csv("out/data/20191002/FLEX_L2_SNAPSHOT.csv")
+    df_3 = pd.read_csv("out/data/20191003/FLEX_L2_SNAPSHOT.csv")
+    df_4 = pd.read_csv("out/data/20191004/FLEX_L2_SNAPSHOT.csv")
 
-    # Concatenate all days
-    lob_df = pd.concat([df_1], ignore_index=True) 
+    lob_df = pd.concat([df_1], ignore_index=True)
 
-    # Final check: convert 'time' column to datetime if exists
-    if 'time' in lob_df.columns:
-        lob_df['time'] = pd.to_datetime(lob_df['time'])
+    if "time" in lob_df.columns:
+        lob_df["time"] = pd.to_datetime(lob_df["time"])
+
     dataset = LOBGanDataset(lob_df, market_depth=MARKET_DEPTH)
     loader = DataLoader(dataset, batch_size=BATCH, shuffle=SHUFFLE_DATA)
 
     x_dim = dataset.X.shape[1]
     s_dim = dataset.S.shape[1]
 
-    G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN, out_dim=x_dim)
-    D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN)
+    G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN, out_dim=x_dim).to(device)
+    D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN).to(device)
 
-    generator, discriminator = train_gan(generator=G, discriminator=D, dataloader=loader, wgan=True, num_epochs=EPOCHS,
-              z_dim=Z_DIM, device=device, critic_steps=CRITIC_STEPS, lambda_gp=LAMBDA_GP, lr_d=LR_D, lr_g=LR_G)
+    gen_path = Path(str(MODELS_DIR / "generator_") + str(MARKET_DEPTH) + "layers.pth")
+    disc_path = Path(str(MODELS_DIR / "discriminator_") + str(MARKET_DEPTH) + "layers.pth")
 
-    # Save trained models
-    torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
-    torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
+    if "--load" in sys.argv:
+        print("Loading pretrained models...")
 
+        if not gen_path.exists() or not disc_path.exists():
+            raise FileNotFoundError("Model files not found.")
+
+        G.load_state_dict(torch.load(gen_path, map_location=device))
+        D.load_state_dict(torch.load(disc_path, map_location=device))
+        G.eval()
+        D.eval()
+        print("Pre trained model loaded.")
+
+    generator, discriminator = train_gan(generator=G, discriminator=D, dataloader=loader, wgan=True, num_epochs=EPOCHS, z_dim=Z_DIM, 
+                                            device=device, critic_steps=CRITIC_STEPS, lambda_gp=LAMBDA_GP, lr_d=LR_D, lr_g=LR_G, 
+                                            market_depth=MARKET_DEPTH)
+
+    os.makedirs(MODELS_DIR, exist_ok=True)
+    torch.save(generator.state_dict(), gen_path)
+    torch.save(discriminator.state_dict(), disc_path)
+    print("Models trained and saved.")
 """
     # Number of timestamps to simulate and compare to true ones
     time_index = 1000
@@ -175,6 +195,12 @@ if __name__ == "__main__":
     # De-standardize differences
     df_gen = df_gen * std + mean
     numeric_df[numeric_cols] = numeric_df[numeric_cols] * std + mean
+
+    # ------------------------------
+    # Inverse Log-transform
+    # ------------------------------
+    df_gen = np.expm1(df_gen)
+    numeric_df[numeric_cols] = np.expm1(numeric_df[numeric_cols])
 
     # --- DE-DIFFERENTIATE USING LOCAL BASELINE ---
     # df_gen = df_gen.cumsum()

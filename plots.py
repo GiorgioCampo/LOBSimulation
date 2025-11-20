@@ -47,6 +47,7 @@ def plot_real_vs_generated(lob_df, df_gen, time_index, save=True):
 
 def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index, 
                                 ci_low=0.05, ci_high=0.95, column="bidPx_0",
+                                fname="real_vs_generated_conf_bands.pdf",
                                 save=True):
     """
     lob_df       : real LOB dataframe
@@ -96,6 +97,10 @@ def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index,
     # Median line
     plt.plot(t_gen, median, color="blue", linewidth=1.5, label="Generated median")
 
+    # Plot one random path as well
+    # path_idx = np.random.randint(len(df_gen_list))
+    # plt.plot(df_gen_list[path_idx].index, df_gen_list[path_idx][column], color="blue", linewidth=0.8)
+
     # Real L0 line
     plt.plot(real.index, real[column], color="black", linewidth=1.2, label="Real")
 
@@ -109,7 +114,8 @@ def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index,
     plt.tight_layout()
 
     if save:
-        plt.savefig("out/plots/real_vs_generated_conf_bands.pdf")
+        plt.savefig("out/plots/" + fname)
     else:
         plt.show()
     plt.close()
+
