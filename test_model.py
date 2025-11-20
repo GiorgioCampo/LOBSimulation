@@ -3,13 +3,14 @@ import pandas as pd
 import torch
 import numpy as np
 from tqdm import tqdm
-from train_model import MODELS_DIR, LOBGanDataset, Z_DIM, HIDDEN
+from train_model import MODELS_DIR, LOBGanDataset, Z_DIM, HIDDEN, MARKET_DEPTH
 from model.gan_model import Generator, Discriminator
 from plots import plot_real_vs_generated_conf  # updated plot function
+from pathlib import Path
 
 # ------------------- CONFIG -------------------
 DATA_FILE = "out/data/20191002/FLEX_L2_SNAPSHOT.csv"
-N_OUTPUT_ROWS = 1000       # timesteps per path
+N_OUTPUT_ROWS = 300       # timesteps per path
 N_PATHS = 100             # number of generated paths
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ---------------------------------------------
@@ -42,8 +43,8 @@ if __name__ == "__main__":
     G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN, out_dim=x_dim).to(DEVICE)
     D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN).to(DEVICE)
 
-    G.load_state_dict(torch.load(MODELS_DIR / "generator.pth", map_location=DEVICE))
-    D.load_state_dict(torch.load(MODELS_DIR / "discriminator.pth", map_location=DEVICE))
+    G.load_state_dict(torch.load(Path(str(MODELS_DIR / "generator_") + str(MARKET_DEPTH) + "layers.pth"), map_location=DEVICE))
+    D.load_state_dict(torch.load(Path(str(MODELS_DIR / "discriminator_") + str(MARKET_DEPTH) + "layers.pth"), map_location=DEVICE))
     G.eval()
     D.eval()
 

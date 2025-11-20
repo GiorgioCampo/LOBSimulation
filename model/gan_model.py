@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.nn.utils.parametrizations import spectral_norm as sn
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from pathlib import Path
@@ -69,6 +70,7 @@ class Generator(nn.Module):
 
         h = self.activation(self.final_fc1(h_cat))
         out = self.final_fc2(h)   # linear output: can be positive or negative
+        # out = torch.nn.functional.softplus(out)
         return out
 
 # -----------------------
@@ -96,7 +98,7 @@ class Discriminator(nn.Module):
         self.s_fc2 = nn.Linear(hidden_dim, hidden_dim)
 
         # After concatenation -> two more layers + output
-        self.final_fc1 = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.final_fc1 = nn.Linear(hidden_dim * 2,hidden_dim)
         self.final_fc2 = nn.Linear(hidden_dim, 1)  # single scalar output
 
         self.activation = nn.ReLU()
@@ -118,21 +120,27 @@ class Discriminator(nn.Module):
 # Training skeleton
 # -----------------------
 def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, device='cpu', wgan=False, critic_steps=5, lr_g=1e-4, lr_d=1e-4, 
-              lambda_gp=10):
+              lambda_gp=10, market_depth=5):
     
     generator.to(device)
     discriminator.to(device)
 
     # Choice of optimizers:
     # - commonly: Adam for G, Adam or RMSprop for D (WGAN recommends RMSprop originally)
-    if wgan:
-        # WGAN commonly used RMSprop (original paper), but Adam also sometimes used
-        opt_d = optim.RMSprop(discriminator.parameters(), lr=lr_d)
-        opt_g = optim.RMSprop(generator.parameters(), lr=lr_g)
-    else:
-        opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.5, 0.999))
-        opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.5, 0.999))
+    # if wgan:
+    #     # WGAN commonly used RMSprop (original paper), but Adam also sometimes used
+    #     opt_d = optim.RMSprop(discriminator.parameters(), lr=lr_d)
+    #     opt_g = optim.RMSprop(generator.parameters(), lr=lr_g)
+    # else:
+    opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.0, 0.9))
+    opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.0, 0.9))
 
+    # scheduler_d = optim.lr_scheduler.ReduceLROnPlateau(
+    #     opt_d, mode='min', factor=0.5, patience=10, verbose=True, min_lr=1e-6
+    # )
+    # scheduler_g = optim.lr_scheduler.ReduceLROnPlateau(
+    #     opt_g, mode='min', factor=0.5, patience=10, verbose=True, min_lr=1e-6
+    # )
     # Loss for vanilla GAN
     #bce_loss = nn.BCEWithLogitsLoss()
 
@@ -178,7 +186,7 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
                 gnorm_d = sum(p.grad.norm()**2 for p in discriminator.parameters() if p.grad is not None)**0.5
                 
                 # Gradient clipping (suggested by ChatGPT)
-                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=5)
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=10)
                 opt_d.step()
                 
                 # Store metrics
@@ -192,6 +200,8 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
             z = torch.randn(batch_size, z_dim, device=device)
             gen_x = generator(z, s)
             g_loss = -discriminator(gen_x, s).mean()
+            
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=10)
 
             opt_g.zero_grad()
             g_loss.backward()
@@ -220,9 +230,12 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
         if (best_w_dist is None) or (w_dist < best_w_dist):
             print(f"New best W_dist: {w_dist:.3f}. Saving...")
             best_w_dist = w_dist
-            torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
-            torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
+            torch.save(generator.state_dict(), Path(str(MODELS_DIR / "generator_") + str(market_depth) + "layers.pth"))
+            torch.save(discriminator.state_dict(), Path(str(MODELS_DIR / "discriminator_") + str(market_depth) + "layers.pth"))
 
+        # scheduler_d.step(np.mean(d_losses))
+        # scheduler_g.step(np.mean(g_losses))
+        
     return generator, discriminator
 
 # -----------------------
@@ -257,5 +270,5 @@ if __name__ == "__main__":
         wgan=True,          # still True (we're in Wasserstein mode)
         critic_steps=5,
         lr_g=1e-4,
-        lr_d=1e-4,
+        lr_d=1e-4
     )
