@@ -100,7 +100,7 @@ def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index,
     plt.plot(real.index, real[column], color="black", linewidth=1.2, label="Real")
 
     # Transition marker
-    plt.axvline(real.index[-time_index], color="red", linestyle=":", label="Transition")
+    plt.axvline(real.index[time_index], color="red", linestyle=":", label="Transition")
 
     plt.title("Real vs Generated (Confidence Bands)")
     plt.xlabel("Time")

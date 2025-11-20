@@ -9,8 +9,9 @@ from plots import plot_real_vs_generated_conf
 
 # ------------------- CONFIG -------------------
 DATA_FILE = "out/data/20191002/FLEX_L2_SNAPSHOT.csv"
-N_OUTPUT_ROWS = 300
-N_PATHS = 100
+INITIAL_INDEX = np.random.randint(0, 1100)
+N_OUTPUT_ROWS = 200
+N_PATHS = 10
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 USE_DIFFS = False
 INCLUDE_DIFFS = False
@@ -83,11 +84,11 @@ if __name__ == "__main__":
     # Get initial state from raw data (NOT differentiated)
     initial_state_raw = lob_df_raw[l2_cols].iloc[0].values
 
-    initial_state_raw_gen = lob_df_raw.groupby("time").last()[l2_cols].iloc[-N_OUTPUT_ROWS]
+    initial_state_raw_gen = lob_df_raw.groupby("time").last()[l2_cols].iloc[INITIAL_INDEX]
     
     with torch.no_grad():
         for path_idx in tqdm(range(N_PATHS), desc="Generating paths"):
-            current_s = dataset.S[-N_OUTPUT_ROWS].unsqueeze(0).to(DEVICE)
+            current_s = dataset.S[INITIAL_INDEX].unsqueeze(0).to(DEVICE)
             
             generated = []
             current_level = initial_state_raw_gen.copy()  # Start from actual price levels
@@ -97,7 +98,7 @@ if __name__ == "__main__":
                 x_next = G(z, current_s)
                 
                 # Denormalize
-                x_next_denorm = (x_next.cpu().numpy().flatten() * std_l2) + mean_l2
+                x_next_denorm = np.round((x_next.cpu().numpy().flatten() * std_l2) + mean_l2, 2)
                 
                 if USE_DIFFS:
                     # Model outputs diffs -> integrate to get levels
@@ -108,10 +109,10 @@ if __name__ == "__main__":
                     generated.append(x_next_denorm)
                     current_level = x_next_denorm
                 
-                current_s = x_next
+                current_s = torch.round(x_next, decimals=2)
             
             df_gen = pd.DataFrame(generated, columns=l2_cols)
-            df_gen["time"] = timestamps[-N_OUTPUT_ROWS:]
+            df_gen["time"] = timestamps[INITIAL_INDEX: INITIAL_INDEX + N_OUTPUT_ROWS]
             df_gen_list.append(df_gen)
             
             if path_idx == 0:
@@ -129,9 +130,9 @@ if __name__ == "__main__":
     for column in plot_columns:
         plot_real_vs_generated_conf(
             true_df, df_gen_list, 
-            time_index=N_OUTPUT_ROWS, 
+            time_index=INITIAL_INDEX, 
             save=True, 
             column=column
         )
     
-    print(f"Generated {N_PATHS} paths, each with {N_OUTPUT_ROWS} timesteps → plots saved.")
+    print(f"Generated {N_PATHS} paths from {INITIAL_INDEX}, each with {N_OUTPUT_ROWS} timesteps → plots saved.")
