@@ -8,7 +8,8 @@ from model.gan_model import Generator, Discriminator
 from plots import plot_real_vs_generated_conf
 
 # ------------------- CONFIG -------------------
-DATA_FILE = "out/data/20191002/FLEX_L2_SNAPSHOT.csv"
+day = np.random.randint(1, 4)
+DATA_FILE = f"out/data/2019100{day}/FLEX_L2_SNAPSHOT.csv"
 INITIAL_INDEX = np.random.randint(0, 1100)
 N_OUTPUT_ROWS = 200
 N_PATHS = 10

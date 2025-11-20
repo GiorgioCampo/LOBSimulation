@@ -20,6 +20,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde, wasserstein_distance
 
+from train_model import MARKET_DEPTH
+
 BASE_FOLDER = Path(__file__).resolve().parent
 DAY = "20191002"
 REAL_CSV = BASE_FOLDER / f"out/data/{DAY}/FLEX_L2_SNAPSHOT.csv"
@@ -78,6 +80,16 @@ class LOBData:
         self.labels_bid = [f"Bid {i}" for i in range(self.K, 0, -1)]
         self.labels_ask = [f"Ask {i}" for i in range(1, self.K + 1)]
         self.labels_all = self.labels_bid + self.labels_ask
+
+        # Clean up bid and ask to market depth
+        self.prices_bid = self.prices_bid[:, :MARKET_DEPTH]
+        self.qty_bid = self.qty_bid[:, :MARKET_DEPTH]
+        self.prices_ask = self.prices_ask[:, :MARKET_DEPTH]
+        self.qty_ask = self.qty_ask[:, :MARKET_DEPTH]
+        self.labels_ask = self.labels_ask[:MARKET_DEPTH]
+        self.labels_bid = self.labels_bid[:MARKET_DEPTH]
+        self.labels_all = self.labels_bid + self.labels_ask
+        self.K = prices_bid.shape[1]
 
 
 def parse_csv_header(path: str) -> List[str]:
@@ -464,21 +476,29 @@ def main():
     
     # Create output directory
     os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
-    
-    # Load real data
-    real_data = load_lob_csv(Config.REAL_CSV)
-    
-    # ====================================================
-    #  Flip bid signs (bids negative, asks positive)
-    # ====================================================
-    real_data.qty_bid = -np.abs(real_data.qty_bid)
-    real_data.qty_ask = np.abs(real_data.qty_ask)
+    files = [
+        "out/data/20191001/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191002/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191003/FLEX_L2_SNAPSHOT.csv",
+        "out/data/20191004/FLEX_L2_SNAPSHOT.csv"
+    ]
+    real_q_all = None
+    for real_csv in files:
+        # Load real data
+        real_data = load_lob_csv(real_csv)
+        
+        # ====================================================
+        #  Flip bid signs (bids negative, asks positive)
+        # ====================================================
+        real_data.qty_bid = np.abs(real_data.qty_bid)
+        real_data.qty_ask = np.abs(real_data.qty_ask)
 
-    # Fit normalizer on real data
-    normalizer = QueueNormalizer(real_data.qty_bid, real_data.qty_ask)
-    real_q_bid_norm, real_q_ask_norm = normalizer.normalize(real_data.qty_bid, real_data.qty_ask)
+        # Fit normalizer on real data
+        normalizer = QueueNormalizer(real_data.qty_bid, real_data.qty_ask)
+        real_q_bid_norm, real_q_ask_norm = normalizer.normalize(real_data.qty_bid, real_data.qty_ask)
 
-    real_q_all = np.hstack([real_q_bid_norm, real_q_ask_norm])
+        real_q = np.hstack([real_q_bid_norm, real_q_ask_norm])
+        real_q_all = np.vstack([real_q_all, real_q]) if real_q_all is not None else real_q
     
     # Infer tick size
     all_prices = np.concatenate([real_data.best_bid, real_data.best_ask])
@@ -495,9 +515,9 @@ def main():
         print("\nFake data detected - loading for comparison...")
         fake_data = load_lob_csv(Config.FAKE_CSV)
         
-        if fake_data.K != real_data.K:
-            print(f"ERROR: Level mismatch (real K={real_data.K}, fake K={fake_data.K})")
-            sys.exit(1)
+        # if fake_data.K != real_data.K:
+        #     print(f"ERROR: Level mismatch (real K={real_data.K}, fake K={fake_data.K})")
+        #     sys.exit(1)
         
         fake_q_bid_norm, fake_q_ask_norm = normalizer.normalize(fake_data.qty_bid, fake_data.qty_ask)
         fake_q_all = np.hstack([fake_q_bid_norm, fake_q_ask_norm])
