@@ -1,10 +1,10 @@
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.optim as optim
 from torch.nn.utils.parametrizations import spectral_norm as sn
-from torch.utils.data import DataLoader, Dataset
-import numpy as np
 from pathlib import Path
+from torch.utils.data import DataLoader, Dataset
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE_DIR / "out/models/"
@@ -114,14 +114,33 @@ class Discriminator(nn.Module):
         h = self.activation(self.final_fc1(h))
         out = self.final_fc2(h)  # scalar
 
-        return out.squeeze(1)  # shape (batch,)
+        return out.squeeze(1)  # shape (batch,)   
+        
 
 # -----------------------
 # Training skeleton
 # -----------------------
-def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, device='cpu', wgan=False, critic_steps=5, lr_g=1e-4, lr_d=1e-4, 
-              lambda_gp=10, market_depth=5):
-    
+def train_gan(
+    *,
+    generator,
+    discriminator,
+    dataloader,
+    z_dim=32,
+    num_epochs=50,
+    device='cpu',
+    wgan=False,
+    critic_steps=5,
+    lr_g=1e-4,
+    lr_d=1e-4,
+    lambda_gp=10,
+    save_model=False
+):
+    """
+    Training skeleton for vanilla GAN or WGAN.
+    - If wgan=True: use WGAN critic updates (no sigmoid), RMSprop or Adam can be used.
+    - Gradient clipping is applied to discriminator parameters (as requested).
+    """
+
     generator.to(device)
     discriminator.to(device)
 
@@ -150,6 +169,7 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
         d_losses, g_losses, gps = [], [], []
         real_scores, fake_scores = [], []
         gnorms_D, gnorms_G = [], []
+        per_sample_norms_list = []
         
         for i, (real_x, s) in enumerate(dataloader):
             batch_size = real_x.size(0)
@@ -161,6 +181,7 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
                 z = torch.randn(batch_size, z_dim, device=device)
                 fake_x = generator(z, s).detach()
 
+                # Shouldnt we use the abs value? Otherwise positive and negative values will cancel each other out
                 d_real = discriminator(real_x, s)
                 d_fake = discriminator(fake_x, s)
 
@@ -176,7 +197,7 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
                 )[0]
                 gp = ((grad.view(batch_size, -1).norm(2, dim=1) - 1)**2).mean()
 
-                wasserstein = -(d_real.mean() - d_fake.mean())
+                wasserstein = - (d_real.mean() - d_fake.mean())
                 d_loss = wasserstein + lambda_gp * gp
 
                 opt_d.zero_grad()
@@ -196,6 +217,9 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
                 d_losses.append(d_loss.item())
                 gnorms_D.append(gnorm_d.item())
 
+                # store per-sample norms for logging
+                per_sample_norms_list.append(grad.view(batch_size, -1).norm(2, dim=1).detach().cpu())
+
             # ====== Update Generator ======
             z = torch.randn(batch_size, z_dim, device=device)
             gen_x = generator(z, s)
@@ -210,11 +234,14 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
             gnorm_g = sum(p.grad.norm()**2 for p in generator.parameters() if p.grad is not None)**0.5
             
             opt_g.step()
-            
+
+         
             g_losses.append(g_loss.item())
             gnorms_G.append(gnorm_g.item())
 
-        # Epoch summary
+        # =======================
+        # Epoch summary metrics
+        # =======================
         E_real = np.mean(real_scores)
         E_fake = np.mean(fake_scores)
         w_dist = E_real - E_fake
@@ -222,20 +249,56 @@ def train_gan(*, generator, discriminator, dataloader, z_dim=32, num_epochs=50, 
         print(
             f"Epoch {epoch+1}/{num_epochs} | "
             f"D_loss: {np.mean(d_losses):.4f} | G_loss: {np.mean(g_losses):.4f} | "
-            f"E_real: {E_real:.4f} | E_fake: {E_fake:.4f} | W_dist: {w_dist:.4f} "
+            f"E_real: {E_real:.4f} | E_fake: {E_fake:.4f} | W_dist: {w_dist:.4f} | "
             f"GP: {np.mean(gps):.4f} | "
             f"||grad_D||: {np.mean(gnorms_D):.4f} | ||grad_G||: {np.mean(gnorms_G):.4f}"
         )
 
-        if (best_w_dist is None) or (w_dist < best_w_dist):
-            print(f"New best W_dist: {w_dist:.3f}. Saving...")
-            best_w_dist = w_dist
-            torch.save(generator.state_dict(), Path(str(MODELS_DIR / "generator_") + str(market_depth) + "layers.pth"))
-            torch.save(discriminator.state_dict(), Path(str(MODELS_DIR / "discriminator_") + str(market_depth) + "layers.pth"))
+        # ============================================================
+        # 1. GP diagnostics — recompute norms from the stored gp batch
+        # ============================================================
+        # Concatenate all per-sample norms
+        all_per_sample_norms = torch.cat(per_sample_norms_list)
 
-        # scheduler_d.step(np.mean(d_losses))
-        # scheduler_g.step(np.mean(g_losses))
-        
+        print(
+            f"[GP] mean={all_per_sample_norms.mean():.4f}  "
+            f"std={all_per_sample_norms.std():.4f}  "
+            f"min={all_per_sample_norms.min():.4f}  max={all_per_sample_norms.max():.4f}  "
+            f"pct_in_[0.8,1.2]={((all_per_sample_norms>=0.8)&(all_per_sample_norms<=1.2)).float().mean():.2f}"
+        )
+
+        # ======================================================
+        # 2. Critic output stats — re-evaluate on fresh batches
+        # ======================================================
+        print(
+            f"[D] real: mean={np.mean(real_scores):.2f}  std={np.std(real_scores):.2f}  "
+            f"min={np.min(real_scores):.2f}  max={np.max(real_scores):.2f}"
+        )
+        print(
+            f"[D] fake: mean={np.mean(fake_scores):.2f}  std={np.std(fake_scores):.2f}  "
+            f"min={np.min(fake_scores):.2f}  max={np.max(fake_scores):.2f}"
+        )
+
+        # ======================================
+        # 3. Generator output magnitude checks
+        # ======================================
+        with torch.no_grad():
+            z_dbg = torch.randn(batch_size, z_dim, device=device)
+            gen_dbg = generator(z_dbg, s)
+
+        print(
+            f"[GEN] abs_max={gen_dbg.abs().max().item():.3e}  "
+            f"mean={gen_dbg.mean().item():.3e}  std={gen_dbg.std().item():.3e}"
+        )
+
+
+        # If W_dist is less then last, save model
+        if save_model and ((best_w_dist is None) or (abs(w_dist) < best_w_dist)):
+            print(f"New best W_dist: {w_dist:.3f}. Saving models...")
+            best_w_dist = abs(w_dist)
+            torch.save(generator.state_dict(), MODELS_DIR / "generator.pth")
+            torch.save(discriminator.state_dict(), MODELS_DIR / "discriminator.pth")
+
     return generator, discriminator
 
 # -----------------------
