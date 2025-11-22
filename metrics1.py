@@ -1,15 +1,3 @@
-#!/usr/bin/env python3
-"""
-Enhanced LOB-GAN Metrics Script
-
-Generates:
-  1) marginals_conditional_Q.png   — Q distributions conditioned on Δp ≥ kφ
-  2) marginals_all_levels.png      — Unconditional Q distributions per level (optional)
-  3) avg_lob_shape.png             — Average book shape across levels
-
-Queue normalization: Q_tilde = sign(Q) * sqrt(|Q| / C), where C = E[|Q|] per level
-"""
-
 from __future__ import annotations
 import os
 import sys
@@ -19,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde, wasserstein_distance
+from train_model import MARKET_DEPTH
 
 BASE_FOLDER = Path(__file__).resolve().parent
 DAY = "20191002"
@@ -33,7 +22,7 @@ class Config:
     # Paths
     REAL_CSV: str = REAL_CSV
     FAKE_CSV: Optional[str] = FAKE_CSV  # Set to path when generated data is ready
-    OUTPUT_DIR: str = "./figs"
+    OUTPUT_DIR: str = "./out/metrics"
     
     # Plot settings
     GRID_COLS: int = 2
@@ -79,6 +68,16 @@ class LOBData:
         self.labels_ask = [f"Ask {i}" for i in range(1, self.K + 1)]
         self.labels_all = self.labels_bid + self.labels_ask
 
+        # Clean up to market depth the bid and price
+        self.prices_bid = self.prices_bid[:, :MARKET_DEPTH]
+        self.qty_bid = self.qty_bid[:, :MARKET_DEPTH]
+        self.prices_ask = self.prices_ask[:, :MARKET_DEPTH]
+        self.qty_ask = self.qty_ask[:, :MARKET_DEPTH]
+        self.K = self.prices_bid.shape[1]
+        self.labels_bid = self.labels_bid[:MARKET_DEPTH]
+        self.labels_ask = self.labels_ask[:MARKET_DEPTH]
+        self.labels_all = self.labels_bid + self.labels_ask
+
 
 def parse_csv_header(path: str) -> List[str]:
     """Read CSV header"""
@@ -117,6 +116,9 @@ def load_lob_csv(path: str) -> LOBData:
                [name_to_idx[c] for c in ask_px_cols] +
                [name_to_idx[c] for c in ask_q_cols])
     
+    data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=usecols)
+    data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=usecols)
+    data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=usecols)
     data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=usecols)
     print(f"  Loaded {data.shape[0]} samples")
     
@@ -471,7 +473,7 @@ def main():
     # ====================================================
     #  Flip bid signs (bids negative, asks positive)
     # ====================================================
-    real_data.qty_bid = -np.abs(real_data.qty_bid)
+    real_data.qty_bid = np.abs(real_data.qty_bid)
     real_data.qty_ask = np.abs(real_data.qty_ask)
 
     # Fit normalizer on real data
@@ -494,10 +496,6 @@ def main():
     if Config.FAKE_CSV and os.path.exists(Config.FAKE_CSV):
         print("\nFake data detected - loading for comparison...")
         fake_data = load_lob_csv(Config.FAKE_CSV)
-        
-        if fake_data.K != real_data.K:
-            print(f"ERROR: Level mismatch (real K={real_data.K}, fake K={fake_data.K})")
-            sys.exit(1)
         
         fake_q_bid_norm, fake_q_ask_norm = normalizer.normalize(fake_data.qty_bid, fake_data.qty_ask)
         fake_q_all = np.hstack([fake_q_bid_norm, fake_q_ask_norm])

@@ -47,7 +47,6 @@ def plot_real_vs_generated(lob_df, df_gen, time_index, save=True):
 
 def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index, 
                                 ci_low=0.05, ci_high=0.95, column="bidPx_0",
-                                fname="real_vs_generated_conf_bands.pdf",
                                 save=True):
     """
     lob_df       : real LOB dataframe
@@ -114,8 +113,18 @@ def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index,
     plt.tight_layout()
 
     if save:
-        plt.savefig("out/plots/" + fname)
+        plt.savefig(f"out/plots/real_vs_generated_conf_bands_{column}.pdf")
     else:
         plt.show()
     plt.close()
 
+
+def plot_epochs_evolution(metric, metric_name):
+    plt.figure(figsize=(11, 5))
+    plt.plot(metric)
+    plt.title("Epochs evolution")
+    plt.xlabel("Epoch")
+    plt.ylabel(f"{metric_name}")
+    plt.tight_layout()
+    plt.savefig(f"out/plots/{metric_name}_evolution.pdf")
+    plt.close()
