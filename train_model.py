@@ -15,18 +15,19 @@ MODELS_DIR = BASE_DIR / "out/models/"
 
 # Use OPTUNA for hyperparameter tuning: https://optuna.org/
 Z_DIM = 6               # Noise dimension. 25% - 50% of total dimensions
-HIDDEN = 32
+HIDDEN_D = 64
+HIDDEN_G = 32
 BATCH = 8
 EPOCHS = 100
 CRITIC_STEPS_INITIAL = 5
-CRITIC_STEPS_FINAL = 1
+CRITIC_STEPS_FINAL = 2
 GAMMA = 0.97            # Decay rate for critic steps
 MARKET_DEPTH = 3
 SHUFFLE_DATA = True
-LAMBDA_GP = 15         # Increase to penalize discriminator more
-LR_D = 5e-5
-LR_G = 3e-5
-USE_DIFFS = True
+LAMBDA_GP = 10         # Increase to penalize discriminator more
+LR_D = 2.5e-5
+LR_G = 1.5e-5
+USE_DIFFS = False
 INCLUDE_DIFFS = False
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -200,7 +201,8 @@ if __name__ == "__main__":
         # log hyperparameters
         mlflow.log_param("BATCH", BATCH)
         mlflow.log_param("Z_DIM", Z_DIM)
-        mlflow.log_param("HIDDEN", HIDDEN)
+        mlflow.log_param("HIDDEN_G", HIDDEN_G)
+        mlflow.log_param("HIDDEN_D", HIDDEN_D)
         mlflow.log_param("EPOCHS", EPOCHS)
         mlflow.log_param("LR_D", LR_D)
         mlflow.log_param("LR_G", LR_G)
@@ -220,8 +222,8 @@ if __name__ == "__main__":
         x_dim = dataset.X.shape[1]
         s_dim = dataset.S.shape[1]
 
-        G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN, out_dim=x_dim)
-        D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN)
+        G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN_G, out_dim=x_dim)
+        D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN_D)
 
         generator, discriminator, d_loss, g_loss, w_dist = train_gan(
             generator=G, discriminator=D, dataloader=loader,
@@ -233,11 +235,6 @@ if __name__ == "__main__":
             lr_d=LR_D, lr_g=LR_G,
             save_model=True, model_name=model_name
         )
-
-        # log final metrics
-        mlflow.log_metric("final_d_loss", d_loss[-1])
-        mlflow.log_metric("final_g_loss", g_loss[-1])
-        mlflow.log_metric("final_w_dist", w_dist[-1])
 
         # log full per-epoch curves
         for epoch, (d, g, w) in enumerate(zip(d_loss, g_loss, w_dist)):
