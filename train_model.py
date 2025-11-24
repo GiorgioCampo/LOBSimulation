@@ -1,5 +1,6 @@
 # dataset_lob_gan.py
 import torch
+import mlflow
 import numpy as np
 import pandas as pd
 from typing import List
@@ -14,18 +15,18 @@ MODELS_DIR = BASE_DIR / "out/models/"
 
 # Use OPTUNA for hyperparameter tuning: https://optuna.org/
 Z_DIM = 6               # Noise dimension. 25% - 50% of total dimensions
-HIDDEN = 64
-BATCH = 16
-EPOCHS = 500
-CRITIC_STEPS_INITIAL = 10
-CRITIC_STEPS_FINAL = 5
-GAMMA = 0.9            # Decay rate for critic steps
+HIDDEN = 32
+BATCH = 8
+EPOCHS = 100
+CRITIC_STEPS_INITIAL = 5
+CRITIC_STEPS_FINAL = 1
+GAMMA = 0.97            # Decay rate for critic steps
 MARKET_DEPTH = 3
 SHUFFLE_DATA = True
-LAMBDA_GP = 10         # Increase to penalize discriminator more
-LR_D = 6e-5
-LR_G = 2e-5
-USE_DIFFS = False
+LAMBDA_GP = 15         # Increase to penalize discriminator more
+LR_D = 5e-5
+LR_G = 3e-5
+USE_DIFFS = True
 INCLUDE_DIFFS = False
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -188,24 +189,65 @@ if __name__ == "__main__":
     #     include_diffs_in_state=True
     # )
     
-    loader = DataLoader(dataset, batch_size=BATCH, shuffle=SHUFFLE_DATA)
+    # mlflow.set_experiment("gan_experiments")
 
-    x_dim = dataset.X.shape[1]
-    s_dim = dataset.S.shape[1]
+    with mlflow.start_run():
 
-    G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN, out_dim=x_dim)
-    D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN)
+        if USE_DIFFS: model_name = "diffs" 
+        elif INCLUDE_DIFFS: model_name = "augmented" 
+        else: model_name = "raw"
 
-    if USE_DIFFS:
-        model_name = "diffs"
-    elif INCLUDE_DIFFS:
-        model_name = "augmented"
-    else:
-        model_name = "raw"
+        # log hyperparameters
+        mlflow.log_param("BATCH", BATCH)
+        mlflow.log_param("Z_DIM", Z_DIM)
+        mlflow.log_param("HIDDEN", HIDDEN)
+        mlflow.log_param("EPOCHS", EPOCHS)
+        mlflow.log_param("LR_D", LR_D)
+        mlflow.log_param("LR_G", LR_G)
+        mlflow.log_param("GAMMA", GAMMA)
+        mlflow.log_param("LAMBDA_GP", LAMBDA_GP)
+        mlflow.log_param("CRITIC_STEPS_INITIAL", CRITIC_STEPS_INITIAL)
+        mlflow.log_param("CRITIC_STEPS_FINAL", CRITIC_STEPS_FINAL)
+        mlflow.log_param("USE_DIFFS", USE_DIFFS)
+        mlflow.log_param("INCLUDE_DIFFS", INCLUDE_DIFFS)
+        mlflow.log_param("model_name", model_name)
 
-    generator, discriminator, d_loss, g_loss, w_dist = train_gan(generator=G, discriminator=D, dataloader=loader, wgan=True, num_epochs=EPOCHS,
-              z_dim=Z_DIM, device=device, critic_steps_initial=CRITIC_STEPS_INITIAL, critic_steps_final=CRITIC_STEPS_FINAL,
-              gamma=GAMMA, lambda_gp=LAMBDA_GP, lr_d=LR_D, lr_g=LR_G, save_model=True, model_name=model_name)
+        # your original pipeline
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        loader = DataLoader(dataset, batch_size=BATCH, shuffle=SHUFFLE_DATA)
+
+        x_dim = dataset.X.shape[1]
+        s_dim = dataset.S.shape[1]
+
+        G = Generator(z_dim=Z_DIM, s_dim=s_dim, hidden_dim=HIDDEN, out_dim=x_dim)
+        D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN)
+
+        generator, discriminator, d_loss, g_loss, w_dist = train_gan(
+            generator=G, discriminator=D, dataloader=loader,
+            wgan=True, num_epochs=EPOCHS,
+            z_dim=Z_DIM, device=device,
+            critic_steps_initial=CRITIC_STEPS_INITIAL,
+            critic_steps_final=CRITIC_STEPS_FINAL,
+            gamma=GAMMA, lambda_gp=LAMBDA_GP,
+            lr_d=LR_D, lr_g=LR_G,
+            save_model=True, model_name=model_name
+        )
+
+        # log final metrics
+        mlflow.log_metric("final_d_loss", d_loss[-1])
+        mlflow.log_metric("final_g_loss", g_loss[-1])
+        mlflow.log_metric("final_w_dist", w_dist[-1])
+
+        # log full per-epoch curves
+        for epoch, (d, g, w) in enumerate(zip(d_loss, g_loss, w_dist)):
+            mlflow.log_metric("d_loss", d, step=epoch)
+            mlflow.log_metric("g_loss", g, step=epoch)
+            mlflow.log_metric("wasserstein_distance", w, step=epoch)
+
+        # log trained models
+        mlflow.pytorch.log_model(generator, "generator")
+        mlflow.pytorch.log_model(discriminator, "discriminator")
 
     # Save trained models
     torch.save(generator.state_dict(), MODELS_DIR / f"generator_{model_name}.pth")
