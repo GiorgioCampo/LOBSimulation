@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Enhanced LOB-GAN Metrics Script
+Enhanced LOB-GAN Metrics Script (unconditional only)
 
 Generates:
-  1) marginals_conditional_Q.png   — Q distributions conditioned on Δp ≥ kφ (if enabled)
-  2) marginals_all_levels.png      — Unconditional Q distributions per level
-  3) avg_lob_shape.png             — Average book shape across levels
-  4) correlation_matrices.png      — Real and fake correlation matrices (red/blue, values in cells)
+  1) marginals_all_levels.png      — Unconditional Q distributions per level (Bid 1–3, Ask 1–3)
+  2) avg_lob_shape.png             — Average book shape across levels
+  3) correlation_matrices.png      — Real and fake correlation matrices (red/blue, values in cells)
+  4) midprice_direction_matrix.png — P(Δp_mid>0 | Δp_mid≠ 0, bins of Q^a_1, Q^b_1) for real vs fake
   5) Console-only Frobenius norm of correlation difference (no heatmap)
 
 Queue normalization: Q_tilde = sign(Q) * sqrt(|Q| / C), where C = E[|Q|] per level
@@ -19,7 +19,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.stats import gaussian_kde, wasserstein_distance
+from scipy.stats import gaussian_kde, wasserstein_distance, ks_2samp
 from numpy.linalg import norm
 
 from train_model import MARKET_DEPTH
@@ -42,14 +42,9 @@ class Config:
     # Plot settings
     GRID_COLS: int = 2
     DRAW_VLINE_ZERO: bool = True
-    PLOT_CONDITIONAL_Q: bool = False      # Conditional Q distributions (like paper)
     PLOT_ALL_LEVELS: bool = True          # All level marginals (unconditional)
     PLOT_LOB_SHAPE: bool = True           # Average LOB shape
     PLOT_CORRELATION: bool = True         # Correlation matrices + Frobenius
-    
-    # Conditional plot settings
-    CONDITIONAL_KS: List[int] = [1, 2, 3]  # Tick thresholds: |Δp| ≥ k
-    CONDITION_ON_MID: bool = True          # True: condition on Δmid, False: best bid/ask
     
     # Style
     FIGURE_DPI: int = 300
@@ -165,14 +160,6 @@ class QueueNormalizer:
 # =====================
 # ANALYSIS UTILITIES
 # =====================
-def infer_tick_size(prices: np.ndarray) -> float:
-    """Infer tick size from price grid"""
-    unique_prices = np.unique(prices[~np.isnan(prices)])
-    diffs = np.diff(unique_prices)
-    positive_diffs = diffs[diffs > 0]
-    return np.min(positive_diffs) if len(positive_diffs) > 0 else 0.01
-
-
 def compute_kde(data: np.ndarray, x_min: float, x_max: float, n_points: int = 512) -> Tuple[np.ndarray, np.ndarray]:
     """Compute kernel density estimate"""
     if len(data) < 2:
@@ -191,146 +178,8 @@ def compute_kde(data: np.ndarray, x_min: float, x_max: float, n_points: int = 51
 
 
 # =====================
-# PLOTTING FUNCTIONS
+# PLOTTING FUNCTIONS (UNCONDITIONAL)
 # =====================
-def plot_conditional_marginals(
-    real_q_bid: np.ndarray,
-    real_q_ask: np.ndarray,
-    real_data: LOBData,
-    tick_size: float,
-    output_path: str,
-    fake_q_bid: Optional[np.ndarray] = None,
-    fake_q_ask: Optional[np.ndarray] = None,
-    fake_data: Optional[LOBData] = None,
-    ks: List[int] = [1, 2],
-    levels: List[int] = [0, 1],
-    grid_cols: int = 2,
-):
-    """
-    Plot conditional marginals Q_t conditioned on |Δp(t)| ≥ k*φ
-    Similar to the paper figure.
-    """
-    print("\nGenerating conditional marginal plots (like paper figure)...")
-    
-    # Compute price changes
-    if Config.CONDITION_ON_MID:
-        real_price = real_data.mid
-    else:
-        real_price = real_data.best_bid
-    
-    real_delta_price = np.diff(real_price)
-    real_delta_ticks = np.rint(real_delta_price / tick_size).astype(int)
-    
-    # Align queues: use Q_t where delta is measured from t-1 to t
-    real_q_bid_aligned = real_q_bid[1:, :]
-    real_q_ask_aligned = real_q_ask[1:, :]
-    
-    has_fake = (fake_q_bid is not None and fake_q_ask is not None and fake_data is not None)
-    if has_fake:
-        if Config.CONDITION_ON_MID:
-            fake_price = fake_data.mid
-        else:
-            fake_price = fake_data.best_bid
-        
-        fake_delta_price = np.diff(fake_price)
-        fake_delta_ticks = np.rint(fake_delta_price / tick_size).astype(int)
-        fake_q_bid_aligned = fake_q_bid[1:, :]
-        fake_q_ask_aligned = fake_q_ask[1:, :]
-    
-    panels = []
-    for k in ks:
-        for level_idx in levels:
-            mask_real = np.abs(real_delta_ticks) >= k
-            n_real = np.sum(mask_real)
-            
-            # Ask side
-            real_ask_data = real_q_ask_aligned[mask_real, level_idx]
-            if has_fake:
-                mask_fake = np.abs(fake_delta_ticks) >= k
-                fake_ask_data = fake_q_ask_aligned[mask_fake, level_idx]
-                n_fake = np.sum(mask_fake)
-            else:
-                fake_ask_data = None
-                n_fake = 0
-            
-            panels.append(("Ask", level_idx + 1, k, real_ask_data, fake_ask_data, n_real, n_fake))
-            
-            # Bid side
-            real_bid_data = real_q_bid_aligned[mask_real, level_idx]
-            if has_fake:
-                fake_bid_data = fake_q_bid_aligned[mask_fake, level_idx]
-            else:
-                fake_bid_data = None
-            
-            panels.append(("Bid", level_idx + 1, k, real_bid_data, fake_bid_data, n_real, n_fake))
-    
-    n_panels = len(panels)
-    n_rows = int(np.ceil(n_panels / grid_cols))
-    fig, axes = plt.subplots(n_rows, grid_cols, figsize=(6 * grid_cols, 3 * n_rows))
-    axes = axes.ravel() if n_panels > 1 else [axes]
-    
-    # Common x-limits
-    all_data = [p[3] for p in panels if len(p[3]) > 0]
-    if has_fake:
-        all_data.extend([p[4] for p in panels if p[4] is not None and len(p[4]) > 0])
-    
-    if all_data:
-        x_min = min(np.nanmin(d) for d in all_data)
-        x_max = max(np.nanmax(d) for d in all_data)
-        span = x_max - x_min
-        x_min -= 0.15 * span
-        x_max += 0.15 * span
-    else:
-        x_min, x_max = -5, 5
-    
-    for idx, (side, level, k, real_data_panel, fake_data_panel, n_real, n_fake) in enumerate(panels):
-        ax = axes[idx]
-        
-        if len(real_data_panel) < 2:
-            ax.text(0.5, 0.5, f"Insufficient samples\n(n={len(real_data_panel)})",
-                    ha="center", va="center", fontsize=10)
-            ax.set_xlim(x_min, x_max)
-            ax.set_title(f"$Q_{{p+{k}\\phi}}(t)$, {side} {level}, W1: N/A", fontsize=12)
-            continue
-        
-        xs_r, ys_r = compute_kde(real_data_panel, x_min, x_max)
-        if len(xs_r) > 0:
-            ax.fill_between(xs_r, ys_r, alpha=Config.REAL_ALPHA,
-                            color=Config.REAL_COLOR, label="Real",
-                            linewidth=1.5, edgecolor=Config.REAL_COLOR)
-        
-        w1_str = ""
-        if fake_data_panel is not None and len(fake_data_panel) >= 2:
-            xs_f, ys_f = compute_kde(fake_data_panel, x_min, x_max)
-            if len(xs_f) > 0:
-                ax.fill_between(xs_f, ys_f, alpha=Config.FAKE_ALPHA,
-                                color=Config.FAKE_COLOR, label="Fake",
-                                linewidth=1.5, edgecolor=Config.FAKE_COLOR)
-                w1 = wasserstein_distance(real_data_panel.ravel(), fake_data_panel.ravel())
-                w1_str = f", W1: {w1:.3f}"
-        
-        if Config.DRAW_VLINE_ZERO:
-            ax.axvline(0, color="black", linestyle="-", linewidth=1.5, alpha=0.8)
-        
-        ax.set_title(f"$Q_{{p+{k}\\phi}}(t)$, {side} {level}{w1_str}", fontsize=12, pad=10)
-        ax.set_xlabel("Normalized Queue Size", fontsize=10)
-        ax.set_ylabel("Density", fontsize=10)
-        ax.set_xlim(x_min, x_max)
-        
-        legend_label = f"$|\\Delta p_t| \\geq {k}\\phi$"
-        ax.legend(title=legend_label, fontsize=9, title_fontsize=9,
-                  framealpha=0.95, loc="upper right")
-        ax.grid(alpha=0.2, linewidth=0.5)
-    
-    for idx in range(n_panels, len(axes)):
-        axes[idx].axis("off")
-    
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=Config.FIGURE_DPI, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved: {output_path}")
-
-
 def plot_all_level_marginals(
     real_q_all: np.ndarray,
     labels: List[str],
@@ -432,9 +281,6 @@ def plot_all_level_marginals(
     print(f"  Saved: {output_path}")
 
 
-
-
-
 def plot_average_lob_shape(
     real_q_all: np.ndarray,
     labels: List[str],
@@ -501,6 +347,52 @@ def compute_correlation_matrix(data: np.ndarray) -> np.ndarray:
     C = np.corrcoef(data, rowvar=False)
     return np.nan_to_num(C, nan=0.0, posinf=0.0, neginf=0.0)
 
+def run_ks_tests(
+    real_q_all: np.ndarray,
+    fake_q_all: np.ndarray,
+    n_levels: int = 3,
+) -> None:
+    """
+    Run two-sample Kolmogorov–Smirnov tests for the first n_levels
+    of Bid and Ask queues.
+
+    Uses the *normalized* queues stored in real_q_all and fake_q_all:
+        columns 0..K-1  = bid levels 1..K
+        columns K..2K-1 = ask levels 1..K
+    Prints D statistic and p-value for each level.
+    """
+    # Number of levels per side
+    total_features = real_q_all.shape[1]
+    K = total_features // 2
+    n_levels = min(n_levels, K)
+
+    bid_indices = list(range(n_levels))            # 0,1,2 → Bid 1,2,3
+    ask_indices = list(range(K, K + n_levels))     # K,K+1,K+2 → Ask 1,2,3
+    indices = bid_indices + ask_indices
+
+    level_labels = (
+        [f"Bid {i+1}" for i in range(n_levels)] +
+        [f"Ask {i+1}" for i in range(n_levels)]
+    )
+
+    print("\n======= KS TESTS (Real vs Fake, normalized queue sizes) =======")
+    for label, idx in zip(level_labels, indices):
+        real_vals = real_q_all[:, idx]
+        fake_vals = fake_q_all[:, idx]
+
+        # Drop NaN / inf just in case
+        mask_real = np.isfinite(real_vals)
+        mask_fake = np.isfinite(fake_vals)
+        real_clean = real_vals[mask_real]
+        fake_clean = fake_vals[mask_fake]
+
+        if len(real_clean) == 0 or len(fake_clean) == 0:
+            print(f"{label:6s}: skipped (no finite data)")
+            continue
+
+        D, p = ks_2samp(real_clean, fake_clean)
+        print(f"{label:6s}: D = {D:.4f},  p = {p:.3e}")
+    print("===============================================================\n")
 
 def plot_correlation_matrices(
     real_q_all: np.ndarray,
@@ -615,8 +507,6 @@ def plot_correlation_matrices(
     print(f"  Saved: {output_path}")
 
 
-
-
 def compute_frobenius_correlation(
     real_q_all: np.ndarray,
     fake_q_all: np.ndarray
@@ -633,7 +523,6 @@ def compute_frobenius_correlation(
     frob_real = norm(real_corr, "fro")
     frob_centered = frob / frob_real if frob_real > 1e-12 else frob 
 
-
     print("\n======= CORRELATION FROBENIUS METRIC =======")
     print(f"|| C_real - C_fake ||_F  =  {frob:.6f}") 
     print(f"||C_real-C_fake||_F / ||C_real||_F = {frob_centered:.6f}")
@@ -643,12 +532,186 @@ def compute_frobenius_correlation(
 
 
 # =====================
+# MIDPRICE DIRECTION MATRIX (REAL & FAKE)
+# =====================
+def compute_midprice_direction_matrix(
+    mid_prices: np.ndarray,
+    best_bid_qty: np.ndarray,
+    best_ask_qty: np.ndarray,
+    n_quantiles: int = 10,
+) -> np.ndarray:
+    """
+    Compute matrix M[k, l] =
+        P(Δp_mid > 0 | Δp_mid ≠ 0,
+          Q^a_1(t) in [q^a_k, q^a_{k+1}],
+          Q^b_1(t) in [q^b_l, q^b_{l+1}] )
+
+    Inputs are 1D arrays over time:
+        mid_prices : shape (T,)
+        best_bid_qty : shape (T,)
+        best_ask_qty : shape (T,)
+    """
+    mid_prices = np.asarray(mid_prices).ravel()
+    best_bid_qty = np.asarray(best_bid_qty).ravel()
+    best_ask_qty = np.asarray(best_ask_qty).ravel()
+
+    if len(mid_prices) < 2:
+        raise ValueError("Need at least 2 time steps to compute price changes.")
+
+    # Δp_mid(t -> t+1)
+    delta_mid = mid_prices[1:] - mid_prices[:-1]
+
+    # Use queues at time t (start of transition)
+    bid_t = np.abs(best_bid_qty[:-1])
+    ask_t = np.abs(best_ask_qty[:-1])
+
+    # Condition on Δp_mid ≠ 0
+    mask_nz = delta_mid != 0.0
+    delta_mid = delta_mid[mask_nz]
+    bid_t = bid_t[mask_nz]
+    ask_t = ask_t[mask_nz]
+
+    if len(delta_mid) == 0:
+        raise ValueError("No non-zero price changes found in data.")
+
+    # Quantile edges for bid & ask
+    q_edges_bid = np.quantile(bid_t, np.linspace(0.0, 1.0, n_quantiles + 1))
+    q_edges_ask = np.quantile(ask_t, np.linspace(0.0, 1.0, n_quantiles + 1))
+
+    # Matrix M[ask_quantile, bid_quantile]
+    M = np.full((n_quantiles, n_quantiles), np.nan, dtype=float)
+
+    # Loop over quantile bins
+    for k in range(n_quantiles):      # ask bin
+        ask_low = q_edges_ask[k]
+        ask_high = q_edges_ask[k + 1]
+
+        ask_mask = (ask_t >= ask_low) & (ask_t <= ask_high)
+
+        for l in range(n_quantiles):  # bid bin
+            bid_low = q_edges_bid[l]
+            bid_high = q_edges_bid[l + 1]
+
+            bid_mask = (bid_t >= bid_low) & (bid_t <= bid_high)
+
+            idx = ask_mask & bid_mask
+            n_bin = np.sum(idx)
+            if n_bin == 0:
+                continue  # leave as NaN if no samples
+
+            # Among these, probability Δp_mid > 0 (we already conditioned on Δp_mid ≠ 0)
+            p_up = np.mean(delta_mid[idx] > 0)
+            M[k, l] = p_up
+
+    return M
+
+
+def plot_midprice_direction_matrices(
+    M_real: Optional[np.ndarray],
+    output_path: str,
+    M_fake: Optional[np.ndarray] = None,
+):
+    """
+    Plot midprice-direction matrices.
+
+    If M_fake is provided, shows REAL (left) and FAKE (right) side by side.
+    Otherwise, just plots the single matrix (real or fake).
+
+    M[k,l] = P(Δp_mid>0 | Δp_mid≠ 0, Q^a_1 in ask-bin k, Q^b_1 in bid-bin l).
+    """
+    if M_real is None and M_fake is None:
+        print("No midprice-direction matrices to plot.")
+        return
+
+    # Decide what we have
+    have_real = M_real is not None
+    have_fake = M_fake is not None
+
+    if have_real and have_fake:
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+        mats = [M_real, M_fake]
+        titles = [
+            r"Real: $P(\Delta p_{\mathrm{mid}}>0 \mid \Delta p_{\mathrm{mid}}\neq 0)$",
+            r"Fake: $P(\Delta p_{\mathrm{mid}}>0 \mid \Delta p_{\mathrm{mid}}\neq 0)$",
+        ]
+    else:
+        fig, ax = plt.subplots(1, 1, figsize=(5, 4), constrained_layout=True)
+        axes = [ax]
+        if have_real:
+            mats = [M_real]
+            titles = [r"Real: $P(\Delta p_{\mathrm{mid}}>0 \mid \Delta p_{\mathrm{mid}}\neq 0)$"]
+        else:
+            mats = [M_fake]
+            titles = [r"Fake: $P(\Delta p_{\mathrm{mid}}>0 \mid \Delta p_{\mathrm{mid}}\neq 0)$"]
+
+    # Make NaNs show up as grey
+    cmap = plt.cm.coolwarm.copy()
+    cmap.set_bad(color="lightgrey")
+
+    vmin, vmax = 0.0, 1.0
+    ims = []
+
+    def _plot_single(ax, M, title):
+        M_masked = np.ma.masked_invalid(M)
+        n_q_ask, n_q_bid = M.shape
+
+        im = ax.imshow(
+            M_masked,
+            origin="upper",
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            aspect="equal",
+            interpolation="nearest",
+        )
+
+        # Put values in cells
+        for i in range(n_q_ask):
+            for j in range(n_q_bid):
+                val = M[i, j]
+                if np.isnan(val):
+                    continue
+                txt = f"{val:.2f}"
+                # choose text color based on background
+                color = "white" if (val < 0.3 or val > 0.7) else "black"
+                ax.text(j, i, txt, ha="center", va="center", color=color, fontsize=7)
+
+        ax.set_xlabel("# Bid quantile", fontsize=9)
+        ax.set_ylabel("# Ask quantile", fontsize=9)
+        ax.set_xticks(np.arange(n_q_bid))
+        ax.set_yticks(np.arange(n_q_ask))
+        ax.set_title(title, fontsize=10)
+
+        return im
+
+    for ax, M, title in zip(axes, mats, titles):
+        ims.append(_plot_single(ax, M, title))
+
+    # Shared colorbar on the right
+    mappable = ims[0]
+    cbar = fig.colorbar(
+        mappable,
+        ax=axes,
+        location="right",
+        fraction=0.046,
+        pad=0.04,
+    )
+    cbar.set_label(r"$P(\Delta p_{\mathrm{mid}}>0 \mid \Delta p_{\mathrm{mid}}\neq 0)$",
+                   fontsize=9)
+
+    plt.savefig(output_path, dpi=Config.FIGURE_DPI, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {output_path}")
+
+
+
+# =====================
 # MAIN EXECUTION
 # =====================
 def main():
     """Main execution pipeline"""
     print("=" * 60)
-    print("LOB-GAN Metrics & Diagnostics")
+    print("LOB-GAN Metrics & Diagnostics (Unconditional)")
     print("=" * 60)
     
     os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
@@ -659,28 +722,67 @@ def main():
         "out/data/20191004/FLEX_L2_SNAPSHOT.csv",
     ]
     
-    real_q_all = None
+    # Storage for ALL real data
+    all_real_bid_qty = []
+    all_real_ask_qty = []
+    all_mid_real = []
+    all_best_bid_q_real = []
+    all_best_ask_q_real = []
+    
+    # Keep labels from first file (they're all the same)
+    labels_all = None
+
     for real_csv in files:
         real_data = load_lob_csv(real_csv)
+        
+        # Save labels from first file
+        if labels_all is None:
+            labels_all = real_data.labels_all
+
+        # collect data for midprice-direction matrix
+        all_mid_real.append(real_data.mid)
         
         # Make queues positive (we handle sign visually for bids later)
         real_data.qty_bid = np.abs(real_data.qty_bid)
         real_data.qty_ask = np.abs(real_data.qty_ask)
+        
+        all_best_bid_q_real.append(real_data.qty_bid[:, 0])
+        all_best_ask_q_real.append(real_data.qty_ask[:, 0])
+        
+        # Save for aggregation
+        all_real_bid_qty.append(real_data.qty_bid)
+        all_real_ask_qty.append(real_data.qty_ask)
 
-        normalizer = QueueNormalizer(real_data.qty_bid, real_data.qty_ask)
-        real_q_bid_norm, real_q_ask_norm = normalizer.normalize(real_data.qty_bid, real_data.qty_ask)
-
-        real_q = np.hstack([real_q_bid_norm, real_q_ask_norm])
-        real_q_all = np.vstack([real_q_all, real_q]) if real_q_all is not None else real_q
+    # Concatenate all real data
+    all_real_bid_qty = np.vstack(all_real_bid_qty)
+    all_real_ask_qty = np.vstack(all_real_ask_qty)
+    all_mid_real = np.concatenate(all_mid_real)
+    all_best_bid_q_real = np.concatenate(all_best_bid_q_real)
+    all_best_ask_q_real = np.concatenate(all_best_ask_q_real)
     
-    all_prices = np.concatenate([real_data.best_bid, real_data.best_ask])
-    tick_size = infer_tick_size(all_prices)
-    print(f"\nInferred tick size: {tick_size:.4f}")
+    # NOW create normalizer from ALL real data
+    normalizer = QueueNormalizer(all_real_bid_qty, all_real_ask_qty)
+    
+    # Normalize all real data
+    real_q_bid_norm, real_q_ask_norm = normalizer.normalize(all_real_bid_qty, all_real_ask_qty)
+    real_q_all = np.hstack([real_q_bid_norm, real_q_ask_norm])
+
+    M_real = None
+    try:
+        M_real = compute_midprice_direction_matrix(
+            mid_prices=all_mid_real,
+            best_bid_qty=all_best_bid_q_real,
+            best_ask_qty=all_best_ask_q_real,
+            n_quantiles=10,
+        )
+    except ValueError as e:
+        print(f"Skipping REAL midprice-direction matrix: {e}")
     
     fake_data = None
     fake_q_bid_norm = None
     fake_q_ask_norm = None
     fake_q_all = None
+    M_fake = None
     
     if Config.FAKE_CSV and os.path.exists(Config.FAKE_CSV):
         print("\nFake data detected - loading for comparison...")
@@ -692,6 +794,17 @@ def main():
 
         fake_q_bid_norm, fake_q_ask_norm = normalizer.normalize(fake_data.qty_bid, fake_data.qty_ask)
         fake_q_all = np.hstack([fake_q_bid_norm, fake_q_ask_norm])
+
+        # Midprice-direction matrix for FAKE
+        try:
+            M_fake = compute_midprice_direction_matrix(
+                mid_prices=fake_data.mid,
+                best_bid_qty=np.abs(fake_data.qty_bid[:, 0]),
+                best_ask_qty=np.abs(fake_data.qty_ask[:, 0]),
+                n_quantiles=10,
+            )
+        except ValueError as e:
+            print(f"Skipping FAKE midprice-direction matrix: {e}")
     else:
         print("\nNo fake data - generating plots for real data only")
     
@@ -699,52 +812,46 @@ def main():
     print("Generating Visualizations")
     print("=" * 60)
     
-    # 1. Conditional marginals (if enabled)
-    if Config.PLOT_CONDITIONAL_Q and fake_data is not None:
-        plot_conditional_marginals(
-            real_q_bid=real_q_bid_norm,
-            real_q_ask=real_q_ask_norm,
-            real_data=real_data,
-            tick_size=tick_size,
-            output_path=os.path.join(Config.OUTPUT_DIR, "marginals_conditional_Q.png"),
-            fake_q_bid=fake_q_bid_norm,
-            fake_q_ask=fake_q_ask_norm,
-            fake_data=fake_data,
-            ks=Config.CONDITIONAL_KS,
-            levels=[0, 1],
-            grid_cols=Config.GRID_COLS,
-        )
-    
-    # 2. All level marginals
+    # 1. All level marginals (unconditional)
     if Config.PLOT_ALL_LEVELS:
         plot_all_level_marginals(
             real_q_all=real_q_all,
-            labels=real_data.labels_all,
+            labels=labels_all,
             output_path=os.path.join(Config.OUTPUT_DIR, "marginals_all_levels.png"),
             fake_q_all=fake_q_all,
             grid_cols=Config.GRID_COLS,
         )
     
-    # 3. Average LOB shape
+    # 2. Average LOB shape
     if Config.PLOT_LOB_SHAPE:
         plot_average_lob_shape(
             real_q_all=real_q_all,
-            labels=real_data.labels_all,
+            labels=labels_all,
             output_path=os.path.join(Config.OUTPUT_DIR, "avg_lob_shape.png"),
             fake_q_all=fake_q_all,
         )
     
-    # 4. Correlation matrices + Frobenius number (no difference heatmap)
+    # 3. Correlation matrices + Frobenius number (no difference heatmap)
     if Config.PLOT_CORRELATION and fake_q_all is not None:
         plot_correlation_matrices(
             real_q_all=real_q_all,
-            labels=real_data.labels_all,
+            labels=labels_all,
             output_path=os.path.join(Config.OUTPUT_DIR, "correlation_matrices.png"),
             fake_q_all=fake_q_all,
         )
-        compute_frobenius_correlation(real_q_all, fake_q_all)
+        compute_frobenius_correlation(real_q_all, fake_q_all) 
+        # 3b. KS tests for first 3 bid/ask levels
+        run_ks_tests(real_q_all, fake_q_all, n_levels=3)
+
     elif Config.PLOT_CORRELATION:
         print("\nSkipping correlation outputs (no fake data available).")
+
+    # 4. Midprice-direction matrix (real vs fake)
+    plot_midprice_direction_matrices(
+        M_real=M_real,
+        M_fake=M_fake,
+        output_path=os.path.join(Config.OUTPUT_DIR, "midprice_direction_matrix.png"),
+    )
     
     print("\n" + "=" * 60)
     print("✓ All visualizations generated successfully!")
