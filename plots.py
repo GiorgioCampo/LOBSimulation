@@ -96,6 +96,10 @@ def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index,
     # Median line
     plt.plot(t_gen, median, color="blue", linewidth=1.5, label="Generated median")
 
+    # Plot one random path as well
+    # path_idx = np.random.randint(len(df_gen_list))
+    # plt.plot(df_gen_list[path_idx].index, df_gen_list[path_idx][column], color="blue", linewidth=0.8)
+
     # Real L0 line
     plt.plot(real.index, real[column], color="black", linewidth=1.2, label="Real")
 

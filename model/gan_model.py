@@ -2,12 +2,13 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
-
+from torch.nn.utils.parametrizations import spectral_norm as sn
 from pathlib import Path
 from torch.utils.data import DataLoader, Dataset
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE_DIR / "out/models/"
+DEBUG = False
 
 # Random seed
 # torch.manual_seed(156)
@@ -70,6 +71,7 @@ class Generator(nn.Module):
 
         h = self.activation(self.final_fc1(h_cat))
         out = self.final_fc2(h)   # linear output: can be positive or negative
+        # out = torch.nn.functional.softplus(out)
         return out
 
 # -----------------------
@@ -97,7 +99,7 @@ class Discriminator(nn.Module):
         self.s_fc2 = nn.Linear(hidden_dim, hidden_dim)
 
         # After concatenation -> two more layers + output
-        self.final_fc1 = nn.Linear(hidden_dim * 2, hidden_dim)
+        self.final_fc1 = nn.Linear(hidden_dim * 2,hidden_dim)
         self.final_fc2 = nn.Linear(hidden_dim, 1)  # single scalar output
 
         self.activation = nn.ReLU()
@@ -165,6 +167,67 @@ def train_gan(
     d_loss_history = []
     w_dist_history = []
     
+
+
+    # -----------------------
+    # Helper to compute Frobenius metric
+    # -----------------------
+    def compute_metric(generator, dataloader, device, z_dim):
+        # Try importing metrics1
+        try:
+            import metrics1
+        except ImportError:
+            import sys
+            sys.path.append(str(BASE_DIR))
+            import metrics1
+
+        generator.eval()
+        
+        # Collect Real and Fake data
+        # Use dataset directly if possible for speed
+        if hasattr(dataloader.dataset, 'X') and hasattr(dataloader.dataset, 'S'):
+            real_X = dataloader.dataset.X
+            S = dataloader.dataset.S
+            
+            # Generate fake data in batches
+            fake_X_list = []
+            batch_size = 1024
+            with torch.no_grad():
+                for i in range(0, len(S), batch_size):
+                    s_batch = S[i:i+batch_size].to(device)
+                    z_batch = torch.randn(s_batch.size(0), z_dim, device=device)
+                    fake_batch = generator(z_batch, s_batch).cpu()
+                    fake_X_list.append(fake_batch)
+            fake_X = torch.cat(fake_X_list, dim=0)
+            
+            real_X_np = real_X.numpy()
+            fake_X_np = fake_X.numpy()
+            
+        else:
+            # Fallback: iterate dataloader
+            real_list = []
+            fake_list = []
+            with torch.no_grad():
+                for real_x, s in dataloader:
+                    real_x = real_x.to(device)
+                    s = s.to(device)
+                    z = torch.randn(real_x.size(0), z_dim, device=device)
+                    fake_x = generator(z, s)
+                    
+                    real_list.append(real_x.cpu())
+                    fake_list.append(fake_x.cpu())
+            
+            real_X_np = torch.cat(real_list, dim=0).numpy()
+            fake_X_np = torch.cat(fake_list, dim=0).numpy()
+
+        # Compute metric
+        frob = metrics1.compute_frobenius_correlation(real_X_np, fake_X_np)
+        generator.train()
+        return frob
+
+    # Initialize best metric
+    best_frobenius = float('inf')
+
     for epoch in range(num_epochs):
 
         critic_steps = int(max(critic_steps_final, critic_steps_initial * gamma ** (epoch)))
@@ -210,7 +273,7 @@ def train_gan(
                 gnorm_d = sum(p.grad.norm()**2 for p in discriminator.parameters() if p.grad is not None)**0.5
                 
                 # Gradient clipping (suggested by ChatGPT)
-                # torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=5)
+                torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=10)
                 opt_d.step()
                 
                 # Store metrics
@@ -227,6 +290,8 @@ def train_gan(
             z = torch.randn(batch_size, z_dim, device=device)
             gen_x = generator(z, s)
             g_loss = -discriminator(gen_x, s).mean()
+            
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=10)
 
             opt_g.zero_grad()
             g_loss.backward()
@@ -255,42 +320,43 @@ def train_gan(
             f"||grad_D||: {np.mean(gnorms_D):.4f} | ||grad_G||: {np.mean(gnorms_G):.4f}"
         )
 
-        # ============================================================
-        # 1. GP diagnostics — recompute norms from the stored gp batch
-        # ============================================================
-        # Concatenate all per-sample norms
-        all_per_sample_norms = torch.cat(per_sample_norms_list)
+        if DEBUG:
+            # ============================================================
+            # 1. GP diagnostics — recompute norms from the stored gp batch
+            # ============================================================
+            # Concatenate all per-sample norms
+            all_per_sample_norms = torch.cat(per_sample_norms_list)
 
-        print(
-            f"[GP] mean={all_per_sample_norms.mean():.4f}  "
-            f"std={all_per_sample_norms.std():.4f}  "
-            f"min={all_per_sample_norms.min():.4f}  max={all_per_sample_norms.max():.4f}  "
-            f"pct_in_[0.8,1.2]={((all_per_sample_norms>=0.8)&(all_per_sample_norms<=1.2)).float().mean():.2f}"
-        )
+            print(
+                f"[GP] mean={all_per_sample_norms.mean():.4f}  "
+                f"std={all_per_sample_norms.std():.4f}  "
+                f"min={all_per_sample_norms.min():.4f}  max={all_per_sample_norms.max():.4f}  "
+                f"pct_in_[0.8,1.2]={((all_per_sample_norms>=0.8)&(all_per_sample_norms<=1.2)).float().mean():.2f}"
+            )
 
-        # ======================================================
-        # 2. Critic output stats — re-evaluate on fresh batches
-        # ======================================================
-        print(
-            f"[D] real: mean={np.mean(real_scores):.2f}  std={np.std(real_scores):.2f}  "
-            f"min={np.min(real_scores):.2f}  max={np.max(real_scores):.2f}"
-        )
-        print(
-            f"[D] fake: mean={np.mean(fake_scores):.2f}  std={np.std(fake_scores):.2f}  "
-            f"min={np.min(fake_scores):.2f}  max={np.max(fake_scores):.2f}"
-        )
+            # ======================================================
+            # 2. Critic output stats — re-evaluate on fresh batches
+            # ======================================================
+            print(
+                f"[D] real: mean={np.mean(real_scores):.2f}  std={np.std(real_scores):.2f}  "
+                f"min={np.min(real_scores):.2f}  max={np.max(real_scores):.2f}"
+            )
+            print(
+                f"[D] fake: mean={np.mean(fake_scores):.2f}  std={np.std(fake_scores):.2f}  "
+                f"min={np.min(fake_scores):.2f}  max={np.max(fake_scores):.2f}"
+            )
 
-        # ======================================
-        # 3. Generator output magnitude checks
-        # ======================================
-        with torch.no_grad():
-            z_dbg = torch.randn(batch_size, z_dim, device=device)
-            gen_dbg = generator(z_dbg, s)
+            # ======================================
+            # 3. Generator output magnitude checks
+            # ======================================
+            with torch.no_grad():
+                z_dbg = torch.randn(batch_size, z_dim, device=device)
+                gen_dbg = generator(z_dbg, s)
 
-        print(
-            f"[GEN] abs_max={gen_dbg.abs().max().item():.3e}  "
-            f"mean={gen_dbg.mean().item():.3e}  std={gen_dbg.std().item():.3e}"
-        )
+            print(
+                f"[GEN] abs_max={gen_dbg.abs().max().item():.3e}  "
+                f"mean={gen_dbg.mean().item():.3e}  std={gen_dbg.std().item():.3e}"
+            )
 
         print("Critic Steps used: ", critic_steps)
 
@@ -299,11 +365,19 @@ def train_gan(
         g_loss_history.append(np.mean(g_losses))
         w_dist_history.append(w_dist)
 
-        # If W_dist is less then last, save model
-        # if save_model and ((best_w_dist is None) or (abs(w_dist) < best_w_dist)):
+        # Calculate Frobenius Correlation
+        current_frobenius = compute_metric(generator, dataloader, device, z_dim)
+        print(f"Frobenius Correlation: {current_frobenius:.6f}")
+
+        # Save Best Model based on Frobenius Correlation
+        if current_frobenius < best_frobenius:
+            print(f"New best model found (Frobenius: {current_frobenius:.6f}). Saving...")
+            best_frobenius = current_frobenius
+            torch.save(generator.state_dict(), MODELS_DIR / f"generator_{model_name}_best.pth")
+            torch.save(discriminator.state_dict(), MODELS_DIR / f"discriminator_{model_name}_best.pth")
+
+        # Periodic Save
         if save_model and epoch % save_every == 0:
-            # print(f"New best W_dist: {w_dist:.3f}. Saving models...")
-            # best_w_dist = abs(w_dist)
             print(f"Saving models...")
             torch.save(generator.state_dict(), MODELS_DIR / f"generator_{model_name}.pth")
             torch.save(discriminator.state_dict(), MODELS_DIR / f"discriminator_{model_name}.pth")
@@ -342,5 +416,5 @@ if __name__ == "__main__":
         wgan=True,          # still True (we're in Wasserstein mode)
         critic_steps=5,
         lr_g=1e-4,
-        lr_d=1e-4,
+        lr_d=1e-4
     )

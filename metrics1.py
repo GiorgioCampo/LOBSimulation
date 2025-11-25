@@ -37,7 +37,7 @@ class Config:
     # Paths
     REAL_CSV: str = REAL_CSV
     FAKE_CSV: Optional[str] = FAKE_CSV  # Set to path when generated data is ready
-    OUTPUT_DIR: str = "./figs"
+    OUTPUT_DIR: str = "./out/metrics"
     
     # Plot settings
     GRID_COLS: int = 2
@@ -126,6 +126,9 @@ def load_lob_csv(path: str) -> LOBData:
                [name_to_idx[c] for c in ask_px_cols] +
                [name_to_idx[c] for c in ask_q_cols])
     
+    data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=usecols)
+    data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=usecols)
+    data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=usecols)
     data = np.loadtxt(path, delimiter=",", skiprows=1, usecols=usecols)
     print(f"  Loaded {data.shape[0]} samples")
     
