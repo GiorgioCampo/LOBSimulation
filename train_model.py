@@ -119,13 +119,45 @@ class LOBGANDataset(Dataset):
         """Extract L2 columns and build training tensors."""
         # Select L2 snapshot columns in order
         valid_cols = []
+        self.price_indices = []
+        self.qty_indices = []
+        self.bid_qty_indices = []
+        self.ask_qty_indices = []
+        self.bid_px_indices = []
+        self.ask_px_indices = []
+        
+        idx_counter = 0
         for col in lob_df.columns:
             if any(col.startswith(prefix) for prefix in ["bidPx_", "bidQty_", "askPx_", "askQty_"]):
                 level = int(col.split('_')[-1])
                 if level < self.market_depth:
                     valid_cols.append(col)
+                    
+                    # Track indices
+                    if "Px_" in col:
+                        self.price_indices.append(idx_counter)
+                        if "bidPx_" in col:
+                            self.bid_px_indices.append(idx_counter)
+                        elif "askPx_" in col:
+                            self.ask_px_indices.append(idx_counter)
+                    elif "Qty_" in col:
+                        self.qty_indices.append(idx_counter)
+                        if "bidQty_" in col:
+                            self.bid_qty_indices.append(idx_counter)
+                        elif "askQty_" in col:
+                            self.ask_qty_indices.append(idx_counter)
+                    
+                    idx_counter += 1
 
         print(f"Selected columns: {valid_cols}")
+        print(f"Price indices: {self.price_indices}")
+        print(f"Qty indices: {self.qty_indices}")
+        print(f"Bid Qty indices: {self.bid_qty_indices}")
+        print(f"Ask Qty indices: {self.ask_qty_indices}")
+        print(f"Bid Px indices: {self.bid_px_indices}")
+        print(f"Ask Px indices: {self.ask_px_indices}")
+        
+        self.labels = valid_cols
         lob_df = lob_df[valid_cols]
 
         # Convert to numpy
