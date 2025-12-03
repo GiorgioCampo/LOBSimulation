@@ -121,6 +121,8 @@ def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index,
 
 def plot_epochs_evolution(metric, metric_name):
     plt.figure(figsize=(11, 5))
+    if "distance" in metric_name:
+        plt.yscale("log")
     plt.plot(metric)
     plt.title("Epochs evolution")
     plt.xlabel("Epoch")
