@@ -119,6 +119,49 @@ def plot_real_vs_generated_conf(lob_df, df_gen_list, time_index,
     plt.close()
 
 
+def plot_time_series(data, title, xlabel="Time", ylabel="Value", 
+                     filename=None, output_dir="out/plots", 
+                     print_stats=False, stats_label=None):
+    """
+    Plot a time series and optionally print statistics.
+    
+    Args:
+        data: 1D array-like data to plot
+        title: Plot title
+        xlabel: X-axis label (default: "Time")
+        ylabel: Y-axis label (default: "Value")
+        filename: Output filename (if None, derived from title)
+        output_dir: Directory to save the plot (default: "out/plots")
+        print_stats: Whether to print statistics (default: False)
+        stats_label: Label for statistics output (if None, uses title)
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Print statistics if requested
+    if print_stats:
+        label = stats_label if stats_label else title
+        print(f"  {label} stats: mean={np.mean(data):.6f}, median={np.median(data):.6f}, "
+              f"std={np.std(data):.6f}, min={np.min(data):.6f}, max={np.max(data):.6f}")
+    
+    # Create plot
+    plt.figure(figsize=(10, 6))
+    plt.plot(data)
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.tight_layout()
+    
+    # Save plot
+    if filename is None:
+        # Derive filename from title
+        filename = title.lower().replace(" ", "_") + ".png"
+    
+    filepath = os.path.join(output_dir, filename)
+    plt.savefig(filepath)
+    plt.close()
+
+
 def plot_epochs_evolution(metric, metric_name):
     plt.figure(figsize=(11, 5))
     if "distance" in metric_name:
