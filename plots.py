@@ -162,14 +162,31 @@ def plot_time_series(data, title, xlabel="Time", ylabel="Value",
     plt.close()
 
 
-def plot_epochs_evolution(metric, metric_name):
+def plot_epochs_evolution(metrics, metrics_name):
+    """
+    Plots the evolution of multiple metrics over epochs, safely handling NaNs.
+
+    Args:
+        metrics (list of list of floats): Each sublist contains metric values per epoch.
+        metrics_name (list of str): Names of the metrics (same length as metrics).
+    """
     plt.figure(figsize=(11, 5))
-    if "distance" in metric_name:
+    
+    # Set log scale if any metric name contains "distance"
+    if any(("distance" in name.lower() or "Q" in name) for name in metrics_name):
         plt.yscale("log")
-    plt.plot(metric)
+    
+    for m, name in zip(metrics, metrics_name):
+        m = np.array(m, dtype=np.float64)  # convert to numpy array
+        plt.plot(m, label=name)
+    
     plt.title("Epochs evolution")
     plt.xlabel("Epoch")
-    plt.ylabel(f"{metric_name}")
+    plt.ylabel("Metric value")
+    plt.legend()
     plt.tight_layout()
-    plt.savefig(f"out/plots/{metric_name}_evolution.pdf")
+    
+    # Create a safe filename
+    filename = "_".join(metrics_name).replace(" ", "_")
+    plt.savefig(f"out/plots/{filename}_evolution.pdf")
     plt.close()

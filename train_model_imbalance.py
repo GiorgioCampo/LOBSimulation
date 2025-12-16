@@ -35,14 +35,17 @@ HIDDEN_D = 64
 HIDDEN_G = 64
 BATCH = 2048
 EPOCHS = 2500
-CRITIC_STEPS_INITIAL = 5
+CRITIC_STEPS_INITIAL = 15
 CRITIC_STEPS_FINAL = 1
-GAMMA = 0.99            # Decay rate for critic steps
+GAMMA = 0.95            # Decay rate for critic steps
 MARKET_DEPTH = 3         # Number of levels to use (max 10 based on CSV)
 SHUFFLE_DATA = True
 LAMBDA_GP = 10
 LR_D = 1e-4
-LR_G = 5e-5
+LR_G = 1e-5
+
+TRAIN_SPLIT = 0.8
+VALIDATION_SPLIT = 1 - TRAIN_SPLIT
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -302,6 +305,11 @@ if __name__ == "__main__":
         market_depth=MARKET_DEPTH,
         max_price_change=3
     )
+
+    # Create Train / Validation split
+    train_size = int(len(dataset) * 0.8)
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
     
     # Show first 5 samples of dataset
     for i in range(0, 20):
@@ -333,7 +341,8 @@ if __name__ == "__main__":
         mlflow.log_param("model_name", model_name)
         
         # Create data loader
-        loader = DataLoader(dataset, batch_size=BATCH, shuffle=SHUFFLE_DATA)
+        train_loader = DataLoader(train_dataset, batch_size=BATCH, shuffle=SHUFFLE_DATA)
+        val_loader = DataLoader(val_dataset, batch_size=BATCH, shuffle=False)
         
         # Get dimensions
         x_dim = dataset.X.shape[1]
@@ -349,8 +358,9 @@ if __name__ == "__main__":
         D = Discriminator(x_dim=x_dim, s_dim=s_dim, hidden_dim=HIDDEN_D)
         
         # Train
-        generator, discriminator, d_loss, g_loss, w_dist = train_gan(
-            generator=G, discriminator=D, dataloader=loader,
+        generator, discriminator, d_loss, g_loss, w_dist, frob_level_history, frob_diff_history, price_frob_history, mean_dev_history, var_dev_history = train_gan(
+            generator=G, discriminator=D, 
+            train_dataloader=train_loader, val_dataloader=val_loader,
             wgan=True, num_epochs=EPOCHS,
             z_dim=Z_DIM, device=device,
             critic_steps_initial=CRITIC_STEPS_INITIAL,
@@ -375,8 +385,11 @@ if __name__ == "__main__":
     torch.save(discriminator.state_dict(), MODELS_DIR / f"discriminator_{model_name}.pth")
     
     # Plot training curves
-    plot_epochs_evolution(d_loss, "Discriminator loss (Imbalanced)")
-    plot_epochs_evolution(g_loss, "Generator loss (Imbalanced)")
-    plot_epochs_evolution(w_dist, "Wasserstein distance (Imbalanced)")
-    
+    plot_epochs_evolution([d_loss], ["Discriminator loss"])
+    plot_epochs_evolution([g_loss], ["Generator loss"])
+    plot_epochs_evolution([w_dist], ["Wasserstein distance"])
+    plot_epochs_evolution([frob_level_history, frob_diff_history], ["Q Frobenius level", "Q Frobenius difference"])
+    plot_epochs_evolution([price_frob_history], ["Price Frobenius"])
+    plot_epochs_evolution([mean_dev_history, var_dev_history], ["Mean deviation", "Variance deviation"])
+
     print("\nTraining complete!")

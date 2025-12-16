@@ -5,11 +5,14 @@ import torch.optim as optim
 from torch.nn.utils.parametrizations import spectral_norm as sn
 from pathlib import Path
 from torch.utils.data import DataLoader, Dataset
+from utils import _get_next_state
+import metrics_lib.metrics as m
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE_DIR / "out/models/"
-DEBUG = False
+DEBUG = True
 
+MARKET_DEPTH = 3
 # Random seed
 # torch.manual_seed(156)
 
@@ -125,7 +128,8 @@ def train_gan(
     *,
     generator,
     discriminator,
-    dataloader,
+    train_dataloader,
+    val_dataloader,
     z_dim=32,
     num_epochs=50,
     device='cpu',
@@ -166,64 +170,135 @@ def train_gan(
     g_loss_history = []
     d_loss_history = []
     w_dist_history = []
+    frob_level_history = []
+    frob_diff_history = []
+    price_frob_history = []
+    mean_dev_history = []
+    var_dev_history = []
     
 
 
     # -----------------------
     # Helper to compute Frobenius metric
     # -----------------------
-    def compute_metric(generator, dataloader, device, z_dim):
-        # Try importing metrics1
-        try:
-            import metrics1
-        except ImportError:
-            import sys
-            sys.path.append(str(BASE_DIR))
-            import metrics1
+    def compute_metrics(generator, dataloader, device, z_dim):
+        """
+        Computes evaluation metrics for the generator:
+        - Frobenius norm on level correlations
+        - Frobenius norm on difference correlations
+        - Mean deviation
+        - Variance deviation
+
+        Assumes dataloader is temporally ordered.
+        """
 
         generator.eval()
-        
-        # Collect Real and Fake data
-        # Use dataset directly if possible for speed
-        if hasattr(dataloader.dataset, 'X') and hasattr(dataloader.dataset, 'S'):
-            real_X = dataloader.dataset.X
-            S = dataloader.dataset.S
-            
-            # Generate fake data in batches
-            fake_X_list = []
-            batch_size = 1024
-            with torch.no_grad():
-                for i in range(0, len(S), batch_size):
-                    s_batch = S[i:i+batch_size].to(device)
-                    z_batch = torch.randn(s_batch.size(0), z_dim, device=device)
-                    fake_batch = generator(z_batch, s_batch).cpu()
-                    fake_X_list.append(fake_batch)
-            fake_X = torch.cat(fake_X_list, dim=0)
-            
-            real_X_np = real_X.numpy()
-            fake_X_np = fake_X.numpy()
-            
-        else:
-            # Fallback: iterate dataloader
-            real_list = []
-            fake_list = []
-            with torch.no_grad():
-                for real_x, s in dataloader:
-                    real_x = real_x.to(device)
-                    s = s.to(device)
-                    z = torch.randn(real_x.size(0), z_dim, device=device)
-                    fake_x = generator(z, s)
-                    
-                    real_list.append(real_x.cpu())
-                    fake_list.append(fake_x.cpu())
-            
-            real_X_np = torch.cat(real_list, dim=0).numpy()
-            fake_X_np = torch.cat(fake_list, dim=0).numpy()
 
-        # Compute metric
-        frob = metrics1.compute_frobenius_correlation(real_X_np, fake_X_np)
+        real_states = []
+        fake_states = []
+
+        mid_changes_real = []
+        mid_changes_fake = []
+
+        best_bids_real = []
+        best_bids_fake = []
+
+        best_asks_real = []
+        best_asks_fake = []
+
+        with torch.no_grad():
+            for X, S in dataloader:
+                X = X.to(device)        # (B, T)
+                S = S.to(device)        # already centered
+                B = X.size(0)
+
+                z = torch.randn(B, z_dim, device=device)
+
+                # Generate fake next state
+                X_fake = generator(z, S)   # (B, T)
+
+                # =========================
+                # Mid-price changes (per sample)
+                # =========================
+                # Count negatives per row
+                neg_real = (X < 0).sum(dim=1)
+                neg_fake = (X_fake < 0).sum(dim=1)
+
+                # Mid-price change in ticks
+                # print((neg_real - 2 * MARKET_DEPTH))
+                mid_changes_real.extend((neg_real - 2 * MARKET_DEPTH).cpu().numpy())
+                mid_changes_fake.extend((neg_fake - 2 * MARKET_DEPTH).cpu().numpy())
+
+                # =========================
+                # Center states
+                # =========================
+                X_real_c = _get_next_state(X)       # (B, 2D)
+                X_fake_c = _get_next_state(X_fake)  # (B, 2D)
+
+                # =========================
+                # Best bid / ask (per sample)
+                # =========================
+                best_bids_real.extend(X_real_c[:, MARKET_DEPTH - 1].cpu().numpy())
+                best_bids_fake.extend(X_fake_c[:, MARKET_DEPTH - 1].cpu().numpy())
+
+                # Best ask = min (closest to zero)
+                best_asks_real.extend(X_real_c[:, MARKET_DEPTH].cpu().numpy())
+                best_asks_fake.extend(X_fake_c[:, MARKET_DEPTH].cpu().numpy())
+
+        # =========================
+        # Store centered states
+        # =========================
+        real_states.append(X_real_c.cpu())
+        fake_states.append(X_fake_c.cpu())
+
+
+        # Concatenate in temporal order
+        real_X = torch.cat(real_states, dim=0).numpy()
+        fake_X = torch.cat(fake_states, dim=0).numpy()
+
+        # =========================
+        # Temporal alignment
+        # =========================
+        # X_t and X_{t+Δt}
+        real_X_t  = real_X[:-1]
+        real_X_t1 = real_X[1:]
+
+        fake_X_t  = fake_X[:-1]
+        fake_X_t1 = fake_X[1:]
+
+        # =========================
+        # Metrics
+        # =========================
+
+        metrics = {}
+
+        # 1. Level correlation Frobenius
+        metrics["frob_corr_level"] = m.compute_frobenius_correlation(
+            real_X_t1, fake_X_t1
+        )
+
+        # 2. Difference correlation Frobenius
+        metrics["frob_corr_diff"] = m.compute_frobenius_correlation(
+            real_X_t1 - real_X_t,
+            fake_X_t1 - fake_X_t
+        )
+
+        # 3. Mean / Variance deviation
+        mean_dev, var_dev = m.mean_var_deviation(
+            real_X_t1, fake_X_t1
+        )
+        metrics["mean_dev"] = mean_dev
+        metrics["var_dev"] = var_dev
+
+        # 4. Conditional Price Changes Matrix Frobenius
+        m_real = m.compute_midprice_direction_matrix(mid_changes_real, best_bids_real, best_asks_real)
+        m_fake = m.compute_midprice_direction_matrix(mid_changes_fake, best_bids_fake, best_asks_fake)
+
+        metrics["frob_price"] = m.compute_price_frobenius(m_real, m_fake)
+
         generator.train()
-        return frob
+        return metrics
+
 
     # Initialize best metric
     best_frobenius = float('inf')
@@ -237,7 +312,7 @@ def train_gan(
         gnorms_D, gnorms_G = [], []
         per_sample_norms_list = []
         
-        for i, (real_x, s) in enumerate(dataloader):
+        for i, (real_x, s) in enumerate(train_dataloader):
             batch_size = real_x.size(0)
             real_x = real_x.to(device)
             s = s.to(device)
@@ -366,13 +441,31 @@ def train_gan(
         w_dist_history.append(w_dist)
 
         # Calculate Frobenius Correlation
-        current_frobenius = compute_metric(generator, dataloader, device, z_dim)
+        metrics = compute_metrics(generator, val_dataloader, device, z_dim)
+        current_frobenius = metrics["frob_corr_level"]
+        current_frobenius_diff = metrics["frob_corr_diff"]
+        current_price_frob = metrics["frob_price"]
+        current_mean_dev = metrics["mean_dev"]
+        current_var_dev = metrics["var_dev"]
+
+        frob_level_history.append(current_frobenius)
+        frob_diff_history.append(current_frobenius_diff)
+        price_frob_history.append(current_price_frob)
+        mean_dev_history.append(current_mean_dev)
+        var_dev_history.append(current_var_dev)
+
+        print("\n======= METRICS =======")
         print(f"Frobenius Correlation: {current_frobenius:.6f}")
+        print(f"Frobenius Correlation Diff: {current_frobenius_diff:.6f}")
+        print(f"Price Frobenius: {current_price_frob:.6f}")
+        print(f"Mean Deviation: {current_mean_dev:.6f}")
+        print(f"Variance Deviation: {current_var_dev:.6f}")
+        print("========================\n")
 
         # Save Best Model based on Frobenius Correlation
-        if current_frobenius < best_frobenius:
-            print(f"New best model found (Frobenius: {current_frobenius:.6f}). Saving...")
-            best_frobenius = current_frobenius
+        if current_price_frob < best_frobenius:
+            print(f"New best model found (Frobenius: {current_price_frob:.6f}). Saving...")
+            best_frobenius = current_price_frob
             torch.save(generator.state_dict(), MODELS_DIR / f"generator_{model_name}_best.pth")
             torch.save(discriminator.state_dict(), MODELS_DIR / f"discriminator_{model_name}_best.pth")
 
@@ -382,7 +475,8 @@ def train_gan(
             torch.save(generator.state_dict(), MODELS_DIR / f"generator_{model_name}.pth")
             torch.save(discriminator.state_dict(), MODELS_DIR / f"discriminator_{model_name}.pth")
 
-    return generator, discriminator, d_loss_history, g_loss_history, w_dist_history
+    return (generator, discriminator, d_loss_history, g_loss_history, w_dist_history,
+           frob_level_history, frob_diff_history, price_frob_history, mean_dev_history, var_dev_history)
 
 # -----------------------
 # Example usage

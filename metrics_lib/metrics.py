@@ -59,6 +59,51 @@ def run_ks_tests(
         print(f"{label:6s}: D = {D:.4f},  p = {p:.3e}")
     print("===============================================================\n")
 
+
+def mean_var_deviation(
+    real_X: np.ndarray,
+    fake_X: np.ndarray,
+    eps: float = 1e-8
+):
+    """
+    Computes mean and variance relative deviations between real and fake data.
+
+    Parameters
+    ----------
+    real_X : np.ndarray
+        Shape (N, d), real centered LOB states
+    fake_X : np.ndarray
+        Shape (N, d), fake centered LOB states
+    eps : float
+        Numerical stability constant
+
+    Returns
+    -------
+    mean_dev : float
+        Average relative deviation of means
+    var_dev : float
+        Average relative deviation of variances
+    """
+
+    # First-order moments
+    mu_real = real_X.mean(axis=0)
+    mu_fake = fake_X.mean(axis=0)
+
+    # Second-order moments
+    var_real = real_X.var(axis=0)
+    var_fake = fake_X.var(axis=0)
+
+    # Relative deviations
+    mean_dev = np.mean(
+        np.abs(mu_fake - mu_real) / (np.abs(mu_real) + eps)
+    )
+
+    var_dev = np.mean(
+        np.abs(var_fake - var_real) / (var_real + eps)
+    )
+
+    return mean_dev, var_dev
+
 def compute_frobenius_correlation(
     real_q_all: np.ndarray,
     fake_q_all: np.ndarray
@@ -75,12 +120,12 @@ def compute_frobenius_correlation(
     frob_real = norm(real_corr, "fro")
     frob_centered = frob / frob_real if frob_real > 1e-12 else frob 
 
-    print("\n======= CORRELATION FROBENIUS METRIC =======")
-    print(f"|| C_real - C_fake ||_F  =  {frob:.6f}") 
-    print(f"||C_real-C_fake||_F / ||C_real||_F = {frob_centered:.6f}")
-    print("============================================\n")
+    # print("\n======= CORRELATION FROBENIUS METRIC =======")
+    # print(f"|| C_real - C_fake ||_F  =  {frob:.6f}") 
+    # print(f"||C_real-C_fake||_F / ||C_real||_F = {frob_centered:.6f}")
+    # print("============================================\n")
 
-    return frob
+    return frob_centered
 
 def compute_midprice_direction_matrix(
     mid_prices: np.ndarray,
@@ -152,3 +197,16 @@ def compute_midprice_direction_matrix(
             M[k, l] = p_up
 
     return M
+
+def compute_price_frobenius(m_real, m_fake):
+    diff = m_real - m_fake
+    frob = norm(diff, "fro") 
+    frob_real = norm(m_real, "fro")
+    frob_centered = frob / frob_real if frob_real > 1e-12 else frob 
+
+    # print("\n======= CORRELATION FROBENIUS METRIC =======")
+    # print(f"|| C_real - C_fake ||_F  =  {frob:.6f}") 
+    # print(f"||C_real-C_fake||_F / ||C_real||_F = {frob_centered:.6f}")
+    # print("============================================\n")
+
+    return frob_centered

@@ -20,12 +20,13 @@ sys.path.append(str(Path(__file__).parent))
 
 from train_model_imbalance import LobGanDatasetImbalance, DATA_DIR, MARKET_DEPTH
 from model.gan_model import Generator
+from utils import _get_next_state, _random_side_swap
 
 # Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 Z_DIM = 3
 HIDDEN_G = 64
-MODEL_PATH = Path("out/models/generator_imbalanced_best.pth")  # or generator_imbalanced.pth
+MODEL_PATH = Path("out/models/generator_imbalanced.pth")  # or generator_imbalanced.pth
 GENERATION_HORIZON = 200
 NUM_PATHS = 1000
 
@@ -211,7 +212,7 @@ def generate_fake_data(generator, dataset, z_dim, device, initial_states = [], h
 
             generated_states.append(x_next.cpu().numpy())
             current_s = _get_next_state(x_next)
-            current_s = _random_side_swap(current_s)  # Random sign flip for diversity
+            current_s = _random_side_swap(current_s, p=0.5)  # Random sign flip for diversity
     
     # Stack into array (num_paths, horizon, features)
     generated_states = np.stack(generated_states, axis=1)
@@ -222,91 +223,6 @@ def generate_fake_data(generator, dataset, z_dim, device, initial_states = [], h
     print(f"  Generated shape: {generated_states.shape}")
     
     return generated_states
-
-
-def _random_side_swap(current_s, p=0.5):
-    """
-    current_s: (N, 2D) CUDA tensor
-      [ bids (neg, far→near) | asks (pos, near→far) ]
-
-    returns: (N, 2D) CUDA tensor with same canonical structure
-    """
-
-    device = current_s.device
-    N, _ = current_s.shape
-    D = MARKET_DEPTH
-
-    # row-wise Bernoulli
-    flip = (torch.rand(N, device=device) < p).unsqueeze(1)  # (N,1)
-
-    bids = current_s[:, :D]      # neg, far → near
-    asks = current_s[:, D:]      # pos, near → far
-
-    # side swap + sign flip + depth reversal
-    swapped = torch.cat(
-        (
-            -asks.flip(dims=[1]),  # asks → bids (far → near)
-            -bids.flip(dims=[1])   # bids → asks (near → far)
-            # -bids,
-            # -asks
-        ),
-        dim=1
-    )
-
-    out = torch.where(flip, swapped, current_s)
-
-    # # Debug print
-    # print("Before:")
-    # print(current_s)
-    # print("After:")
-    # print(out)
-
-    return out
-
-def _get_next_state(x_state: torch.Tensor):
-    """
-    x_state: (N, T) CUDA tensor
-    returns: (N, 2*MARKET_DEPTH) CUDA tensor
-    """
-
-    device = x_state.device
-    N, T = x_state.shape
-
-    # print(x_state)
-
-    # 1. detect sign changes
-    sign = torch.sign(x_state)
-    sign_change = sign[:, :-1] * sign[:, 1:] < 0     # (N, T-1) bool
-
-    # 2. choose pivot = sign change closest to center
-    center = T // 2
-    idxs = torch.arange(T - 1, device=device).unsqueeze(0)  # (1, T-1)
-
-    # distance from center, invalid positions masked with +inf
-    dist = torch.abs(idxs - center)
-    dist = torch.where(sign_change, dist, torch.full_like(dist, T))
-
-    pivot = dist.argmin(dim=1) + 1    # (N,)
-
-    # if no sign change → fallback to center
-    no_change = sign_change.sum(dim=1) == 0
-    pivot = torch.where(no_change, torch.full_like(pivot, center), pivot)
-
-    # 3. build window indices
-    offsets = torch.arange(-MARKET_DEPTH, MARKET_DEPTH, device=device)  # (2D,)
-    window_idx = pivot.unsqueeze(1) + offsets.unsqueeze(0)              # (N, 2D)
-
-    # clamp to valid range
-    window_idx = window_idx.clamp(0, T - 1)
-
-    # 4. gather
-    batch_idx = torch.arange(N, device=device).unsqueeze(1)
-    current_s = x_state[batch_idx, window_idx]   # (N, 2*MARKET_DEPTH)
-
-    # print("  Previous state:", x_state[0:3, :])
-    # print("  Current state:", current_s[0:3, :])
-
-    return current_s
 
 
 def plot_price_comparison(real_prices_list, decoded_prices_list, tick_size, save_path=None):
@@ -345,7 +261,7 @@ def plot_price_comparison(real_prices_list, decoded_prices_list, tick_size, save
     plt.show()
 
 
-def compute_price_statistics(real_prices, decoded_prices_list):
+def compute_price_statistics(real_prices, decoded_prices_list, tick_size):
     """
     Compute statistics comparing real and decoded prices.
     
@@ -358,7 +274,7 @@ def compute_price_statistics(real_prices, decoded_prices_list):
     print("="*80)
     
     # Real price statistics
-    real_returns = np.diff(real_prices)
+    real_returns = np.diff(real_prices) // tick_size
     real_prices = np.array(real_prices)
     print(f"\nReal Prices:")
     print(f"  Mean: {real_prices.mean():.4f}")
@@ -375,7 +291,7 @@ def compute_price_statistics(real_prices, decoded_prices_list):
     decoded_mean = all_decoded.mean(axis=0)
     decoded_std = all_decoded.std(axis=0)
     
-    decoded_returns = np.diff(all_decoded, axis=1)
+    decoded_returns = np.diff(all_decoded, axis=1)  // tick_size
     
     print(f"  Mean: {decoded_mean.mean():.4f}")
     print(f"  Std: {decoded_std.mean():.4f}")
@@ -535,7 +451,7 @@ def main():
         decoded_prices_list.append(decoded_prices)
     
     # Compute statistics
-    compute_price_statistics(real_prices, decoded_prices_list)
+    compute_price_statistics(real_prices, decoded_prices_list, tick_size)
 
     plot_cumulative_distribution(real_prices, decoded_prices_list, tick_size)
     
