@@ -33,16 +33,16 @@ DATA_DIR = BASE_DIR / "BenchmarkDatasets/NoAuction/1.NoAuction_Zscore/NoAuction_
 Z_DIM = 3              # Noise dimension
 HIDDEN_D = 64
 HIDDEN_G = 64
-BATCH = 128
+BATCH = 2048
 EPOCHS = 2500
-CRITIC_STEPS_INITIAL = 4
+CRITIC_STEPS_INITIAL = 5
 CRITIC_STEPS_FINAL = 1
-GAMMA = 0.975            # Decay rate for critic steps
+GAMMA = 0.99            # Decay rate for critic steps
 MARKET_DEPTH = 3         # Number of levels to use (max 10 based on CSV)
 SHUFFLE_DATA = True
 LAMBDA_GP = 10
-LR_D = 4e-5
-LR_G = 2e-5
+LR_D = 1e-4
+LR_G = 5e-5
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -239,7 +239,7 @@ class LobGanDatasetImbalance(Dataset):
             states: Imbalanced states (n_samples, 2*market_depth)
         """
         n_samples = len(bid_qty)
-        x_s = np.zeros((n_samples, 2 * self.market_depth), dtype=np.float32)
+        x_s = np.zeros((n_samples, 4 * self.market_depth), dtype=np.float32)
         s_s = np.zeros((n_samples, 2 * self.market_depth), dtype=np.float32)
 
         for i in range(n_samples):
@@ -250,11 +250,11 @@ class LobGanDatasetImbalance(Dataset):
             # Default: market_depth bids, market_depth asks
             # Price increase: more bids, fewer asks
             # Price decrease: fewer bids, more asks
-            n_bid_cols = self.market_depth + price_change
-            n_ask_cols = self.market_depth - price_change
+            n_bid_cols = 2 * self.market_depth + price_change
+            n_ask_cols = 2 * self.market_depth - price_change
             
             # Check n_bid_cols and n_ask_cols sum to 2*market_depth
-            assert n_bid_cols + n_ask_cols == 2 * self.market_depth, \
+            assert n_bid_cols + n_ask_cols == 4 * self.market_depth, \
                 f"n_bid_cols ({n_bid_cols}) + n_ask_cols ({n_ask_cols}) != {2 * self.market_depth}"                                                           
             
             # Fill bid columns (negative) in reverse order (bid_3, bid_2, bid_1, bid_0)
@@ -304,7 +304,7 @@ if __name__ == "__main__":
     )
     
     # Show first 5 samples of dataset
-    for i in range(10, 20):
+    for i in range(0, 20):
         x_sample, s_sample = dataset[i]
         print(f"Sample {i}:")
         print(f"  X: {x_sample.numpy()}")
