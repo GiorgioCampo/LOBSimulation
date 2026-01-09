@@ -165,7 +165,8 @@ def compute_midprice_direction_matrix(
     ask_t = ask_t[mask_nz]
 
     if len(delta_mid) == 0:
-        raise ValueError("No non-zero price changes found in data.")
+        print("Error: No non-zero price changes found in data.")
+        return np.full((n_quantiles, n_quantiles), np.nan, dtype=float)
 
     # Quantile edges for bid & ask
     q_edges_bid = np.quantile(bid_t, np.linspace(0.0, 1.0, n_quantiles + 1))

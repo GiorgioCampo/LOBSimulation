@@ -13,3 +13,9 @@ class QueueNormalizer:
         q_bid_tilde = np.sign(qty_bid) * np.sqrt(np.abs(qty_bid) / self.C_bid)
         q_ask_tilde = np.sign(qty_ask) * np.sqrt(np.abs(qty_ask) / self.C_ask)
         return q_bid_tilde, q_ask_tilde
+
+    def denormalize(self, q_bid_tilde: np.ndarray, q_ask_tilde: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Invert sqrt normalization: sign(q_tilde) * (q_tilde^2 * C)"""
+        qty_bid = np.sign(q_bid_tilde) * (np.square(q_bid_tilde) * self.C_bid)
+        qty_ask = np.sign(q_ask_tilde) * (np.square(q_ask_tilde) * self.C_ask)
+        return qty_bid, qty_ask

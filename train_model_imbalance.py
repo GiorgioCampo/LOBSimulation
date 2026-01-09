@@ -9,7 +9,7 @@ Key concepts:
 - S-states are computed based on price changes (no price change, increase, or decrease)
 - Only volumes are used as features (prices are hidden)
 - Columns are dynamically balanced based on price tick changes
-- Ask quantities are negative, bid quantities are positive
+- Ask quantities are positive, bid quantities are negative
 """
 
 import torch
@@ -23,6 +23,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from model.gan_model import train_gan, Generator, Discriminator
 from plots import plot_epochs_evolution, plot_time_series
+from metrics_lib.normalization import QueueNormalizer
 
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "out/models/"
@@ -30,19 +31,19 @@ PLOTS_DIR = BASE_DIR / "out/plots/"
 DATA_DIR = BASE_DIR / "BenchmarkDatasets/NoAuction/1.NoAuction_Zscore/NoAuction_Zscore_Training/"
 
 # Hyperparameters
-Z_DIM = 3              # Noise dimension
+Z_DIM = 64              # Noise dimension
 HIDDEN_D = 64
 HIDDEN_G = 64
-BATCH = 2048
-EPOCHS = 2500
-CRITIC_STEPS_INITIAL = 15
-CRITIC_STEPS_FINAL = 1
-GAMMA = 0.95            # Decay rate for critic steps
+BATCH = 512
+EPOCHS = 250
+CRITIC_STEPS_INITIAL = 5
+CRITIC_STEPS_FINAL = 5
+GAMMA = 0.995            # Decay rate for critic steps
 MARKET_DEPTH = 3         # Number of levels to use (max 10 based on CSV)
 SHUFFLE_DATA = True
 LAMBDA_GP = 10
 LR_D = 1e-4
-LR_G = 1e-5
+LR_G = 2e-5
 
 TRAIN_SPLIT = 0.8
 VALIDATION_SPLIT = 1 - TRAIN_SPLIT
@@ -64,7 +65,7 @@ class LobGanDatasetImbalance(Dataset):
     4. Uses only volumes as features (prices are used only to detect changes)
     
     The key idea:
-    - By default, first MARKET_DEPTH columns are positive (bids), next MARKET_DEPTH are negative (asks)
+    - By default, first MARKET_DEPTH columns are negative (bids), next MARKET_DEPTH are positive (asks)
     - When price increases by N ticks, N columns shift from bid to ask side
     - When price decreases by N ticks, N columns shift from ask to bid side
     """
@@ -188,28 +189,28 @@ class LobGanDatasetImbalance(Dataset):
             # Prepend 0 for first sample (no previous price)
             price_change_ticks = np.concatenate([[0], price_change_ticks])
             
-            # Create imbalanced states
-            # For each sample, we create a state vector with balanced columns based on previous price change
-            X_states, S_states = self._create_imbalanced_states(bid_qty, ask_qty, price_change_ticks)
-
-            all_X_states.append(X_states)
-            all_S_states.append(S_states)
             all_price_changes.append(price_change_ticks)
+            all_X_states.append(bid_qty)   # Storing raw bid_qty for now
+            all_S_states.append(ask_qty)   # Storing raw ask_qty for now
         
         # Concatenate all files
-        combined_X_states = np.concatenate(all_X_states, axis=0)
-        combined_S_states = np.concatenate(all_S_states, axis=0)
+        combined_bid_qty = np.concatenate(all_X_states, axis=0)
+        combined_ask_qty = np.concatenate(all_S_states, axis=0)
+        combined_price_changes = np.concatenate(all_price_changes, axis=0)
+
+        # Apply Square Root Normalization (as in metrics)
+        print("  Applying Square Root Normalization...")
+        self.normalizer = QueueNormalizer(combined_bid_qty, combined_ask_qty)
+        combined_bid_qty_norm, combined_ask_qty_norm = self.normalizer.normalize(combined_bid_qty, combined_ask_qty)
         
-        # Standardize globally
-        # self.mean = combined_states.mean(axis=0)
-        # self.std = combined_states.std(axis=0) + 1e-8
-        # combined_states = (combined_states - self.mean) / self.std
-        
+        # Create imbalanced states using normalized quantities
+        X_states, S_states = self._create_imbalanced_states(combined_bid_qty_norm, combined_ask_qty_norm, combined_price_changes)
+
         # Create (X_next, S_curr) pairs
         # S states should be the centered states at time t
         # X states should be the (possibly) imbalanced states at time t+1
-        self.X = torch.tensor(combined_X_states[1:], dtype=torch.float32)
-        self.S = torch.tensor(combined_S_states[:-1], dtype=torch.float32)
+        self.X = torch.tensor(X_states[1:], dtype=torch.float32)
+        self.S = torch.tensor(S_states[:-1], dtype=torch.float32)
         
         # Store for later use
         self.qty_indices = list(range(2 * self.market_depth))
@@ -229,7 +230,7 @@ class LobGanDatasetImbalance(Dataset):
         
         The key idea:
         - We maintain a "centered" view of the order book with 2*market_depth columns
-        - Bid quantities are positive, ask quantities are negative
+        - Bid quantities are negative, ask quantities are positive
         - When price increases, the center shifts up (more ask columns)
         - When price decreases, the center shifts down (more bid columns)
         

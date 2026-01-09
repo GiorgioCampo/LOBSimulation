@@ -10,7 +10,7 @@ import metrics_lib.metrics as m
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE_DIR / "out/models/"
-DEBUG = True
+DEBUG = False
 
 MARKET_DEPTH = 3
 # Random seed
@@ -181,118 +181,109 @@ def train_gan(
     # -----------------------
     # Helper to compute Frobenius metric
     # -----------------------
-    def compute_metrics(generator, dataloader, device, z_dim):
+    def compute_metrics(generator, dataloader, device, z_dim, val_seed=42):
         """
         Computes evaluation metrics for the generator:
         - Frobenius norm on level correlations
         - Frobenius norm on difference correlations
         - Mean deviation
         - Variance deviation
+        - Price direction matrix Frobenius
 
-        Assumes dataloader is temporally ordered.
+        Uses a 2-step generation for fake samples to remove the 'real S_t' conceptual leak
+        and ensure that temporal correlations are derived from model-generated transitions.
         """
-
         generator.eval()
+        
+        # 1. Deterministic validation
+        torch.manual_seed(val_seed)
+        np.random.seed(val_seed)
 
-        real_states = []
-        fake_states = []
-
-        mid_changes_real = []
-        mid_changes_fake = []
-
-        best_bids_real = []
-        best_bids_fake = []
-
-        best_asks_real = []
-        best_asks_fake = []
+        real_X_t1_list, fake_X_t1_list = [], []
+        real_X_t_list, fake_X_t_list = [], []
+        mid_changes_real, mid_changes_fake = [], []
+        
+        # Conditioning variables (at time t) for the price direction matrix
+        best_bids_cond_real, best_asks_cond_real = [], []
+        best_bids_cond_fake, best_asks_cond_fake = [], []
 
         with torch.no_grad():
             for X, S in dataloader:
-                X = X.to(device)        # (B, T)
-                S = S.to(device)        # already centered
+                X, S = X.to(device), S.to(device)
                 B = X.size(0)
 
-                z = torch.randn(B, z_dim, device=device)
+                # --- REAL TRANSITION (S_t -> X_{t+1}) ---
+                # Move detection from imbalanced state X
+                move_real = (X < 0).sum(dim=1) - 2 * MARKET_DEPTH
+                mid_changes_real.extend(move_real.cpu().numpy())
 
-                # Generate fake next state
-                X_fake = generator(z, S)   # (B, T)
+                # Conditioning queues at t (from S_t)
+                best_bids_cond_real.extend(S[:, MARKET_DEPTH - 1].cpu().numpy())
+                best_asks_cond_real.extend(S[:, MARKET_DEPTH].cpu().numpy())
+                
+                # Centered states for correlations
+                real_X_t1_list.append(_get_next_state(X).cpu())
+                real_X_t_list.append(S.cpu())
 
-                # =========================
-                # Mid-price changes (per sample)
-                # =========================
-                # Count negatives per row
-                neg_real = (X < 0).sum(dim=1)
-                neg_fake = (X_fake < 0).sum(dim=1)
+                # --- FAKE TRANSITION (S_{fake, t} -> X_{fake, t+1}) ---
+                # Step 1: Real S_t -> Fake X_{t+1} 
+                # (This is just to get a realistic 'fake' starting point)
+                z1 = torch.randn(B, z_dim, device=device)
+                X_f1 = generator(z1, S)
+                S_f1 = _get_next_state(X_f1) # S_{fake, t}
+                
+                # Step 2: Fake S_{fake, t} -> Fake X_{fake, t+1}
+                # Now we have a 'pure' fake transition starting from a model output
+                z2 = torch.randn(B, z_dim, device=device)
+                X_f2 = generator(z2, S_f1)
+                
+                # Move detection for purely fake transition
+                move_fake = (X_f2 < 0).sum(dim=1) - 2 * MARKET_DEPTH
+                mid_changes_fake.extend(move_fake.cpu().numpy())
 
-                # Mid-price change in ticks
-                # print((neg_real - 2 * MARKET_DEPTH))
-                mid_changes_real.extend((neg_real - 2 * MARKET_DEPTH).cpu().numpy())
-                mid_changes_fake.extend((neg_fake - 2 * MARKET_DEPTH).cpu().numpy())
+                # Conditioning queues at t (from S_{fake, t})
+                best_bids_cond_fake.extend(S_f1[:, MARKET_DEPTH - 1].cpu().numpy())
+                best_asks_cond_fake.extend(S_f1[:, MARKET_DEPTH].cpu().numpy())
+                
+                # Centered states for correlations
+                fake_X_t1_list.append(_get_next_state(X_f2).cpu())
+                fake_X_t_list.append(S_f1.cpu())
 
-                # =========================
-                # Center states
-                # =========================
-                X_real_c = _get_next_state(X)       # (B, 2D)
-                X_fake_c = _get_next_state(X_fake)  # (B, 2D)
+        # Concatenate all batches
+        real_X_t1 = torch.cat(real_X_t1_list, dim=0).numpy()
+        real_X_t  = torch.cat(real_X_t_list, dim=0).numpy()
+        fake_X_t1 = torch.cat(fake_X_t1_list, dim=0).numpy()
+        fake_X_t  = torch.cat(fake_X_t_list, dim=0).numpy()
 
-                # =========================
-                # Best bid / ask (per sample)
-                # =========================
-                best_bids_real.extend(X_real_c[:, MARKET_DEPTH - 1].cpu().numpy())
-                best_bids_fake.extend(X_fake_c[:, MARKET_DEPTH - 1].cpu().numpy())
-
-                # Best ask = min (closest to zero)
-                best_asks_real.extend(X_real_c[:, MARKET_DEPTH].cpu().numpy())
-                best_asks_fake.extend(X_fake_c[:, MARKET_DEPTH].cpu().numpy())
-
-        # =========================
-        # Store centered states
-        # =========================
-        real_states.append(X_real_c.cpu())
-        fake_states.append(X_fake_c.cpu())
-
-
-        # Concatenate in temporal order
-        real_X = torch.cat(real_states, dim=0).numpy()
-        fake_X = torch.cat(fake_states, dim=0).numpy()
-
-        # =========================
-        # Temporal alignment
-        # =========================
-        # X_t and X_{t+Δt}
-        real_X_t  = real_X[:-1]
-        real_X_t1 = real_X[1:]
-
-        fake_X_t  = fake_X[:-1]
-        fake_X_t1 = fake_X[1:]
-
-        # =========================
-        # Metrics
-        # =========================
-
+        # Metrics Dictionary
         metrics = {}
 
-        # 1. Level correlation Frobenius
-        metrics["frob_corr_level"] = m.compute_frobenius_correlation(
-            real_X_t1, fake_X_t1
-        )
+        # 1. Level correlation Frobenius (centered states)
+        metrics["frob_corr_level"] = m.compute_frobenius_correlation(real_X_t1, fake_X_t1)
 
-        # 2. Difference correlation Frobenius
+        # 2. Difference correlation Frobenius (increments)
         metrics["frob_corr_diff"] = m.compute_frobenius_correlation(
             real_X_t1 - real_X_t,
             fake_X_t1 - fake_X_t
         )
 
         # 3. Mean / Variance deviation
-        mean_dev, var_dev = m.mean_var_deviation(
-            real_X_t1, fake_X_t1
-        )
+        mean_dev, var_dev = m.mean_var_deviation(real_X_t1, fake_X_t1)
         metrics["mean_dev"] = mean_dev
         metrics["var_dev"] = var_dev
 
         # 4. Conditional Price Changes Matrix Frobenius
-        m_real = m.compute_midprice_direction_matrix(mid_changes_real, best_bids_real, best_asks_real)
-        m_fake = m.compute_midprice_direction_matrix(mid_changes_fake, best_bids_fake, best_asks_fake)
+        # We use consistent (S_t -> X_{t+1}) conditioning for both real and fake
+        m_real = m.compute_midprice_direction_matrix(
+            np.cumsum(np.concatenate([[0], mid_changes_real])), 
+            np.concatenate([best_bids_cond_real, [0]]), 
+            np.concatenate([best_asks_cond_real, [0]])
+        )
+        m_fake = m.compute_midprice_direction_matrix(
+            np.cumsum(np.concatenate([[0], mid_changes_fake])), 
+            np.concatenate([best_bids_cond_fake, [0]]), 
+            np.concatenate([best_asks_cond_fake, [0]])
+        )
 
         metrics["frob_price"] = m.compute_price_frobenius(m_real, m_fake)
 
