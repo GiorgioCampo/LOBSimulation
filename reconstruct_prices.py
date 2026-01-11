@@ -24,7 +24,7 @@ from utils import _get_next_state, _random_side_swap
 
 # Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-Z_DIM = 64
+Z_DIM = 12
 HIDDEN_G = 64
 MODEL_PATH = Path("out/models/generator_imbalanced.pth")  # or generator_imbalanced.pth
 GENERATION_HORIZON = 200
@@ -235,7 +235,8 @@ def generate_fake_data(generator, dataset, z_dim, device, initial_states = [], h
     
     # In PriceDecoder.decode_sequence we call it sample by sample.
     # Let's de-normalize sample by sample.
-    
+
+
     denorm_states = np.zeros_like(generated_states)
     for p in range(num_paths):
         for t in range(horizon):
@@ -366,7 +367,7 @@ def compute_price_statistics(real_prices, decoded_prices_list, tick_size):
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_cumulative_distribution(real_seqs, fake_seqs, tick_size):
+def plot_cumulative_distribution(real_seqs, fake_seqs, tick_size, save_path=None):
     """
     Smooth CDFs + empirical deciles for real and fake separately
     (replicates Figure 7b behaviour).
@@ -422,6 +423,10 @@ def plot_cumulative_distribution(real_seqs, fake_seqs, tick_size):
         t.set_color("black")
 
     plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"\nPlot saved to: {save_path}")
     plt.show()
 
 
@@ -636,7 +641,9 @@ def main():
     # Compute statistics
     compute_price_statistics(real_prices, decoded_prices_list, tick_size)
 
-    plot_cumulative_distribution(real_prices, decoded_prices_list, tick_size)
+    plot_cumulative_distribution(real_prices, decoded_prices_list, tick_size,
+        save_path="out/price_reconstruction_cdf.png"
+    )
     
     # Plot comparison
     plot_price_comparison(

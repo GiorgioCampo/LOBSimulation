@@ -3,6 +3,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
+from scipy.stats import gaussian_kde
+
+def plot_distribution(data, title, save=True):
+    plt.figure()
+    plt.hist(data, bins=100, density=True, alpha=0.5)
+
+    kde = gaussian_kde(data)
+    x = np.linspace(data.min(), data.max(), 500)
+    plt.plot(x, kde(x), linewidth=2)
+
+    plt.title(title)
+    plt.xlabel("Value")
+    plt.ylabel("Density")
+    plt.tight_layout()
+    if save:
+        plt.savefig("out/plots/" + title + ".png", dpi=150)
+    plt.close()
+
+
 def plot_real_vs_generated(lob_df, df_gen, time_index, save=True):
     real = lob_df.copy()
     if not isinstance(real.index, pd.DatetimeIndex):

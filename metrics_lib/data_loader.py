@@ -1,6 +1,8 @@
 import numpy as np
 from typing import List, Tuple
-from train_model import MARKET_DEPTH
+# from train_model import MARKET_DEPTH
+
+MARKET_DEPTH = 3
 
 class LOBData:
     """Container for LOB snapshot data"""
