@@ -270,14 +270,14 @@ def generate_fake_data(generator, dataset, z_dim, device, initial_states = [], h
                         C = dataset.normalizer.C_bid[level]
                     else:
                         C = dataset.normalizer.C_bid[-1]
-                    denorm_states[p, t, j] = np.sign(val) * (val**2 * C)
+                    denorm_states[p, t, j] = np.sign(val) * (val * C) ** 2
                 else: # Ask
                     level = j - pivot
                     if level < len(dataset.normalizer.C_ask):
                         C = dataset.normalizer.C_ask[level]
                     else:
                         C = dataset.normalizer.C_ask[-1]
-                    denorm_states[p, t, j] = np.sign(val) * (val**2 * C)
+                    denorm_states[p, t, j] = np.sign(val) * (val * C)**2 
     
     generated_states = denorm_states
     print(f"  Generated shape: {generated_states.shape}")
@@ -563,7 +563,8 @@ def main():
     
     # Load real data
     real_prices, indexes, real_states, tick_size, dataset = load_real_data(csv_path, n_samples=NUM_PATHS)
-    
+    print("Normalization C")
+    print(dataset.normalizer.C_bid, dataset.normalizer.C_ask)
     # Check if model exists
     # Otherwise: test run with real data only
     if not MODEL_PATH.exists():
