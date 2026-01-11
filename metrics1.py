@@ -192,7 +192,7 @@ def process_and_plot(
         real_q_bid=real_q_bid_norm,
         real_q_ask=real_q_ask_norm,
         real_data=aggregated_real_data,
-        tick_size=0.01,
+        tick_size=0.001,
         output_path=os.path.join(output_dir, "conditional_marginals.png"),
         fake_q_bid=fake_q_bid_norm,
         fake_q_ask=fake_q_ask_norm,
@@ -208,30 +208,35 @@ def main():
     print("LOB-GAN Metrics & Diagnostics")
     print("=" * 60)
 
-    # 1. Find all day directories
+    # 1. Find all CSV files in the data directory
+    # For FI-2010 data, CSV files are directly in the directory
     data_dir = Config.DATA_DIR
-    # Look for subdirectories that look like dates (YYYYMMDD) or just all subdirs
-    # We assume folders in out/data/ are the days.
-    day_dirs = sorted([d for d in glob.glob(os.path.join(data_dir, "*")) if os.path.isdir(d)])
+    
+    # Look for processed CSV files
+    csv_files = sorted(glob.glob(os.path.join(data_dir, "*_processed.csv")))
+    
+    if not csv_files:
+        # Fallback: look for any CSV files
+        csv_files = sorted(glob.glob(os.path.join(data_dir, "*.csv")))
     
     days_data = {}
     all_real_data_list = []
 
     print(f"Searching for data in: {data_dir}")
+    print(f"Found {len(csv_files)} CSV files")
     
-    for d_path in day_dirs:
-        day_name = os.path.basename(d_path)
-        csv_path = os.path.join(d_path, "FLEX_L2_SNAPSHOT.csv")
+    for csv_path in csv_files:
+        file_name = os.path.basename(csv_path)
+        # Use filename without extension as the "day" identifier
+        day_name = os.path.splitext(file_name)[0]
         
-        if os.path.exists(csv_path):
-            try:
-                data = load_lob_csv(csv_path)
-                days_data[day_name] = data
-                all_real_data_list.append(data)
-            except Exception as e:
-                print(f"Failed to load {day_name}: {e}")
-        else:
-            print(f"Skipping {day_name}: No FLEX_L2_SNAPSHOT.csv found.")
+        try:
+            print(f"Loading {file_name}...")
+            data = load_lob_csv(csv_path)
+            days_data[day_name] = data
+            all_real_data_list.append(data)
+        except Exception as e:
+            print(f"Failed to load {file_name}: {e}")
 
     if not all_real_data_list:
         print("No real data found. Exiting.")

@@ -4,17 +4,21 @@ from typing import Optional
 # Define base paths relative to the project root or this file
 # Assuming this file is in metrics_lib/, so parent is LOBSimulation/
 BASE_FOLDER = Path(__file__).resolve().parent.parent
-DAY = "20191002"
-REAL_CSV = BASE_FOLDER / f"out/data/{DAY}/FLEX_L2_SNAPSHOT.csv"
-FAKE_CSV = BASE_FOLDER / f"generated_lob.csv"
+
+# Use the same data directory as train_model_imbalance.py
+DATA_DIR = BASE_FOLDER / "BenchmarkDatasets/NoAuction/1.NoAuction_Zscore/NoAuction_Zscore_Training/"
+
+# For real data, we'll use the processed CSV files from the training data directory
+# The metrics will look for CSV files in this directory
+FAKE_CSV = BASE_FOLDER / "generated_lob.csv"
+FAKE_CSV = BASE_FOLDER / "out/reconstructed_concatenated.csv"
 
 class Config:
     """Centralized configuration"""
     # Paths
-    REAL_CSV: str = str(REAL_CSV)
+    DATA_DIR: str = str(DATA_DIR)
     FAKE_CSV: Optional[str] = str(FAKE_CSV)  # Set to path when generated data is ready
     OUTPUT_DIR: str = "./out/metrics"
-    DATA_DIR: str = str(BASE_FOLDER / "out/data")
     
     # Plot settings
     GRID_COLS: int = 2
