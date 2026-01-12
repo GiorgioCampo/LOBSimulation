@@ -10,7 +10,7 @@ import metrics_lib.metrics as m
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE_DIR / "out/models/"
-DEBUG = False
+DEBUG = True
 
 MARKET_DEPTH = 3
 # Random seed
@@ -157,11 +157,11 @@ def train_gan(
     # - commonly: Adam for G, Adam or RMSprop for D (WGAN recommends RMSprop originally)
     # if wgan:
     #     # WGAN commonly used RMSprop (original paper), but Adam also sometimes used
-    #     opt_d = optim.RMSprop(discriminator.parameters(), lr=lr_d)
-    #     opt_g = optim.RMSprop(generator.parameters(), lr=lr_g)
+    opt_d = optim.RMSprop(discriminator.parameters(), lr=lr_d)
+    opt_g = optim.RMSprop(generator.parameters(), lr=lr_g)
     # else:
-    opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.0, 0.9))
-    opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.0, 0.9))
+    # opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.0, 0.9))
+    # opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.0, 0.9))
 
     # Loss for vanilla GAN
     #bce_loss = nn.BCEWithLogitsLoss()
@@ -294,8 +294,15 @@ def train_gan(
     # Initialize best metric
     best_frobenius = float('inf')
 
+    prev_d_input_grad = None
+    prev_g_param_grad = None
+
     for epoch in range(num_epochs):
 
+        cos_sim_d = []
+        cos_sim_g = []
+
+        # Update critic steps
         critic_steps = int(max(critic_steps_final, critic_steps_initial * gamma ** (epoch)))
 
         d_losses, g_losses, gps = [], [], []
@@ -327,6 +334,21 @@ def train_gan(
                     grad_outputs=torch.ones_like(d_hat),
                     create_graph=True, retain_graph=True
                 )[0]
+
+                if DEBUG:
+                    # For cosine similarity check on grad_D
+                    curr_d_input_grad = grad.view(batch_size, -1).mean(dim=0)
+
+                    if prev_d_input_grad is not None:
+                        cos_d = torch.nn.functional.cosine_similarity(
+                            curr_d_input_grad,
+                            prev_d_input_grad,
+                            dim=0
+                        )
+                        cos_sim_d.append(cos_d.item())
+
+                    prev_d_input_grad = curr_d_input_grad.detach()
+
                 gp = ((grad.view(batch_size, -1).norm(2, dim=1) - 1)**2).mean()
 
                 wasserstein = - (d_real.mean() - d_fake.mean())
@@ -365,6 +387,24 @@ def train_gan(
             # CALCULATE BEFORE STEPPING
             gnorm_g = sum(p.grad.norm()**2 for p in generator.parameters() if p.grad is not None)**0.5
             
+            if DEBUG:
+                # For cosine similarity check on grad_G
+                curr_g_grad = torch.cat([
+                    p.grad.view(-1)
+                    for p in generator.parameters()
+                    if p.grad is not None
+                ])
+
+                if prev_g_param_grad is not None:
+                    cos_g = torch.nn.functional.cosine_similarity(
+                        curr_g_grad,
+                        prev_g_param_grad,
+                        dim=0
+                    )
+                    cos_sim_g.append(cos_g.item())
+
+                prev_g_param_grad = curr_g_grad.detach()
+
             opt_g.step()
 
          
@@ -423,6 +463,15 @@ def train_gan(
                 f"[GEN] abs_max={gen_dbg.abs().max().item():.3e}  "
                 f"mean={gen_dbg.mean().item():.3e}  std={gen_dbg.std().item():.3e}"
             )
+
+            # ======================================
+            # 4. Cosine similarity check on grad_G
+            # ======================================
+            if len(cos_sim_d) > 0:
+                print(f"[CosD] mean={np.mean(cos_sim_d):.3f} std={np.std(cos_sim_d):.3f}")
+
+            if len(cos_sim_g) > 0:
+                print(f"[CosG] mean={np.mean(cos_sim_g):.3f} std={np.std(cos_sim_g):.3f}")
 
         print("Critic Steps used: ", critic_steps)
 

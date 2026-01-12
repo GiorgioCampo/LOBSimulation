@@ -87,6 +87,8 @@ def process_and_plot(
     normalizer = QueueNormalizer(all_real_bid_qty, all_real_ask_qty)
     
     real_q_bid_norm, real_q_ask_norm = normalizer.normalize(all_real_bid_qty, all_real_ask_qty)
+    print("Normalization C")
+    print(normalizer.C_bid, normalizer.C_ask)
     real_q_all = np.hstack([real_q_bid_norm, real_q_ask_norm])
 
     # --- Real Midprice Matrix ---

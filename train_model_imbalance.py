@@ -22,7 +22,7 @@ from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 
 from model.gan_model import train_gan, Generator, Discriminator
-from plots import plot_epochs_evolution, plot_time_series
+from plots import plot_epochs_evolution, plot_time_series, plot_distribution
 from metrics_lib.normalization import QueueNormalizer
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -31,7 +31,7 @@ PLOTS_DIR = BASE_DIR / "out/plots/"
 DATA_DIR = BASE_DIR / "BenchmarkDatasets/NoAuction/1.NoAuction_Zscore/NoAuction_Zscore_Training/"
 
 # Hyperparameters
-Z_DIM = 64              # Noise dimension
+Z_DIM = 12              # Noise dimension
 HIDDEN_D = 64
 HIDDEN_G = 64
 BATCH = 512
@@ -99,8 +99,8 @@ class LobGanDatasetImbalance(Dataset):
     
     def _load_and_process(self, file_paths: List[str]):
         """Load CSV files and create imbalanced order book states."""
-        all_X_states = []
-        all_S_states = []
+        all_bids = []
+        all_asks = []
         all_price_changes = []
         
         for file_path in file_paths:
@@ -190,12 +190,12 @@ class LobGanDatasetImbalance(Dataset):
             price_change_ticks = np.concatenate([[0], price_change_ticks])
             
             all_price_changes.append(price_change_ticks)
-            all_X_states.append(bid_qty)   # Storing raw bid_qty for now
-            all_S_states.append(ask_qty)   # Storing raw ask_qty for now
+            all_bids.append(bid_qty)   # Storing raw bid_qty for now
+            all_asks.append(ask_qty)   # Storing raw ask_qty for now
         
         # Concatenate all files
-        combined_bid_qty = np.concatenate(all_X_states, axis=0)
-        combined_ask_qty = np.concatenate(all_S_states, axis=0)
+        combined_bid_qty = np.concatenate(all_bids, axis=0)
+        combined_ask_qty = np.concatenate(all_asks, axis=0)
         combined_price_changes = np.concatenate(all_price_changes, axis=0)
 
         # Apply Square Root Normalization (as in metrics)
@@ -203,6 +203,12 @@ class LobGanDatasetImbalance(Dataset):
         self.normalizer = QueueNormalizer(combined_bid_qty, combined_ask_qty)
         combined_bid_qty_norm, combined_ask_qty_norm = self.normalizer.normalize(combined_bid_qty, combined_ask_qty)
         
+        # Plot bids0 and asks0 to check normalization effect
+        plot_distribution(combined_bid_qty[:, 0], "Bid Quantity (Level 0)", save=True)
+        plot_distribution(combined_ask_qty[:, 0], "Ask Quantity (Level 0)", save=True)
+        plot_distribution(combined_bid_qty_norm[:, 0], "Normalized Bid Quantity (Level 0)", save=True)
+        plot_distribution(combined_ask_qty_norm[:, 0], "Normalized Ask Quantity (Level 0)", save=True)
+
         # Create imbalanced states using normalized quantities
         X_states, S_states = self._create_imbalanced_states(combined_bid_qty_norm, combined_ask_qty_norm, combined_price_changes)
 

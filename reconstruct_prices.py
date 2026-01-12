@@ -24,7 +24,7 @@ from utils import _get_next_state, _random_side_swap
 
 # Configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-Z_DIM = 64
+Z_DIM = 12
 HIDDEN_G = 64
 MODEL_PATH = Path("out/models/generator_imbalanced.pth")  # or generator_imbalanced.pth
 GENERATION_HORIZON = 200
@@ -235,7 +235,8 @@ def generate_fake_data(generator, dataset, z_dim, device, initial_states = [], h
     
     # In PriceDecoder.decode_sequence we call it sample by sample.
     # Let's de-normalize sample by sample.
-    
+
+
     denorm_states = np.zeros_like(generated_states)
     for p in range(num_paths):
         for t in range(horizon):
@@ -269,14 +270,14 @@ def generate_fake_data(generator, dataset, z_dim, device, initial_states = [], h
                         C = dataset.normalizer.C_bid[level]
                     else:
                         C = dataset.normalizer.C_bid[-1]
-                    denorm_states[p, t, j] = np.sign(val) * (val**2 * C)
+                    denorm_states[p, t, j] = np.sign(val) * (val * C) ** 2
                 else: # Ask
                     level = j - pivot
                     if level < len(dataset.normalizer.C_ask):
                         C = dataset.normalizer.C_ask[level]
                     else:
                         C = dataset.normalizer.C_ask[-1]
-                    denorm_states[p, t, j] = np.sign(val) * (val**2 * C)
+                    denorm_states[p, t, j] = np.sign(val) * (val * C)**2 
     
     generated_states = denorm_states
     print(f"  Generated shape: {generated_states.shape}")
@@ -366,7 +367,7 @@ def compute_price_statistics(real_prices, decoded_prices_list, tick_size):
 import numpy as np
 import matplotlib.pyplot as plt
 
-def plot_cumulative_distribution(real_seqs, fake_seqs, tick_size):
+def plot_cumulative_distribution(real_seqs, fake_seqs, tick_size, save_path=None):
     """
     Smooth CDFs + empirical deciles for real and fake separately
     (replicates Figure 7b behaviour).
@@ -422,6 +423,10 @@ def plot_cumulative_distribution(real_seqs, fake_seqs, tick_size):
         t.set_color("black")
 
     plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"\nPlot saved to: {save_path}")
     plt.show()
 
 
@@ -558,7 +563,8 @@ def main():
     
     # Load real data
     real_prices, indexes, real_states, tick_size, dataset = load_real_data(csv_path, n_samples=NUM_PATHS)
-    
+    print("Normalization C")
+    print(dataset.normalizer.C_bid, dataset.normalizer.C_ask)
     # Check if model exists
     # Otherwise: test run with real data only
     if not MODEL_PATH.exists():
@@ -636,7 +642,9 @@ def main():
     # Compute statistics
     compute_price_statistics(real_prices, decoded_prices_list, tick_size)
 
-    plot_cumulative_distribution(real_prices, decoded_prices_list, tick_size)
+    plot_cumulative_distribution(real_prices, decoded_prices_list, tick_size,
+        save_path="out/price_reconstruction_cdf.png"
+    )
     
     # Plot comparison
     plot_price_comparison(

@@ -10,7 +10,7 @@ DATA_DIR = BASE_FOLDER / "BenchmarkDatasets/NoAuction/1.NoAuction_Zscore/NoAucti
 
 # For real data, we'll use the processed CSV files from the training data directory
 # The metrics will look for CSV files in this directory
-FAKE_CSV = BASE_FOLDER / "generated_lob.csv"
+# FAKE_CSV = BASE_FOLDER / "generated_lob.csv"
 FAKE_CSV = BASE_FOLDER / "out/reconstructed_concatenated.csv"
 
 class Config:
