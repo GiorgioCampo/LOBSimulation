@@ -14,21 +14,21 @@ BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "out/models/"
 
 # Use OPTUNA for hyperparameter tuning: https://optuna.org/
-Z_DIM = 6               # Noise dimension. 25% - 50% of total dimensions
+Z_DIM = 12               # Noise dimension. 25% - 50% of total dimensions
 HIDDEN_D = 64
-HIDDEN_G = 32
-BATCH = 8
-EPOCHS = 300
+HIDDEN_G = 64
+BATCH = 128
+EPOCHS = 2500
 CRITIC_STEPS_INITIAL = 5
-CRITIC_STEPS_FINAL = 2
-GAMMA = 0.97            # Decay rate for critic steps
+CRITIC_STEPS_FINAL = 1
+GAMMA = 0.995            # Decay rate for critic steps
 MARKET_DEPTH = 3
 SHUFFLE_DATA = True
 LAMBDA_GP = 10         # Increase to penalize discriminator more
-LR_D = 2e-5
-LR_G = 1e-5
+LR_D = 4e-5
+LR_G = 2e-5
 USE_DIFFS = False
-INCLUDE_DIFFS = False
+INCLUDE_DIFFS = True
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

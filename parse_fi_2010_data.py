@@ -3,7 +3,7 @@ import os
 import numpy as np
 
 DATA_DIR = "./BenchmarkDatasets/NoAuction/1.NoAuction_Zscore/NoAuction_Zscore_Training/"
-TICK_THRESHOLD = 50
+TICK_THRESHOLD = 40
 
 def remove_price_jumps(arr, tick_threshold=25, verbose=False):
     """

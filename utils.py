@@ -1,6 +1,7 @@
 import pandas as pd
 from datetime import datetime
 import torch
+import numpy as np
 
 MARKET_DEPTH = 3
 
@@ -111,6 +112,7 @@ def _random_side_swap(current_s, p=0.5):
     D = MARKET_DEPTH
 
     # row-wise Bernoulli
+    # flip = torch.([np.random.rand() < p] * N)
     flip = (torch.rand(N, device=device) < p).unsqueeze(1)  # (N,1)
 
     bids = current_s[:, :D]      # neg, far → near
@@ -165,6 +167,11 @@ def _get_next_state(x_state: torch.Tensor):
     # if no sign change → fallback to center
     no_change = sign_change.sum(dim=1) == 0
     pivot = torch.where(no_change, torch.full_like(pivot, center), pivot)
+
+    # is_bid = x_state < 0
+    # is_ask = x_state > 0
+    # transition = is_bid[:, :-1] & is_ask[:, 1:]
+    # pivot = transition.float().argmax(dim=1) + 1
 
     # 3. build window indices
     offsets = torch.arange(-MARKET_DEPTH, MARKET_DEPTH, device=device)  # (2D,)

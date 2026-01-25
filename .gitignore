@@ -10,3 +10,4 @@ out/
 .vsocode/
 *.db
 mlruns/
+.vscode/settings.json
