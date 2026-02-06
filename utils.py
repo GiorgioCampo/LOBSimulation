@@ -97,8 +97,6 @@ def extractDataFramesFromVar(filePath):
 
     return df_map
 
-
-
 def _random_side_swap(current_s, p=0.5):
     """
     current_s: (N, 2D) CUDA tensor

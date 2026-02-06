@@ -2,6 +2,7 @@ import numpy as np
 from scipy.stats import ks_2samp
 from numpy.linalg import norm
 from typing import List
+from metrics_lib.config import Config
 
 def compute_correlation_matrix(data: np.ndarray) -> np.ndarray:
     """

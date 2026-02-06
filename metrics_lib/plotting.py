@@ -29,7 +29,7 @@ def plot_all_level_marginals(
 
     # Number of levels per side, based on data layout
     K = real_q_all.shape[1] // 2
-    levels_to_plot = min(3, K)  # in case K < 3
+    levels_to_plot = min(Config.PLOT_LEVELS, K)  # Use configurable PLOT_LEVELS
 
     # Column indices: best 3 bid levels and best 3 ask levels
     bid_indices = list(range(0, levels_to_plot))                # 0,1,2 → Bid 1,2,3
@@ -42,14 +42,12 @@ def plot_all_level_marginals(
         [f"Ask {i+1}" for i in range(levels_to_plot)]
     )
 
-    # Slice and sign-adjust: bids negative, asks positive
+    # Slice: bids are already negative, asks are already positive
     real_selected = real_q_all[:, selected_indices].copy()
     n_bids = len(bid_indices)
-    real_selected[:, :n_bids] *= -1  # make bids negative
 
     if fake_q_all is not None:
         fake_selected = fake_q_all[:, selected_indices].copy()
-        fake_selected[:, :n_bids] *= -1  # make fake bids negative too
     else:
         fake_selected = None
 
@@ -123,9 +121,15 @@ def plot_average_lob_shape(
     
     K = len(labels) // 2
     
-    # Real: bids negative, asks positive
-    real_shaped = np.hstack([-real_q_all[:, :K], real_q_all[:, K:]])
+    # Real: bids already negative, asks already positive
+    # Real: bids already negative, asks already positive
+    real_shaped = real_q_all
     mean_real = np.nanmean(real_shaped, axis=0)
+    
+    # Force Bids Negative (Left), Asks Positive (Right) for visualization
+    # This handles case where input might be all positive
+    mean_real[:K] = -np.abs(mean_real[:K])
+    mean_real[K:] = np.abs(mean_real[K:])
     
     x = np.arange(len(labels))
     width = 0.35 if fake_q_all is None else 0.4
@@ -136,9 +140,13 @@ def plot_average_lob_shape(
         ax.bar(x, mean_real, width, color=Config.REAL_COLOR,
                alpha=0.7, label="Real", edgecolor="black", linewidth=0.5)
     else:
-        # Fake: also shaped with bids negative, asks positive
-        fake_shaped = np.hstack([-fake_q_all[:, :K], fake_q_all[:, K:]])
+        # Fake: also already shaped
+        fake_shaped = fake_q_all
         mean_fake = np.nanmean(fake_shaped, axis=0)
+        
+        # Enforce direction for Fake too
+        mean_fake[:K] = -np.abs(mean_fake[:K])
+        mean_fake[K:] = np.abs(mean_fake[K:])
         
         ax.bar(x - width/2, mean_real, width, color=Config.REAL_COLOR,
                alpha=0.7, label="Real", edgecolor="black", linewidth=0.5)
@@ -354,6 +362,7 @@ def plot_conditional_marginals(
         
         # Legend with Condition
         ax.legend(title=f"Cond: ${p['cond_label']}$", loc="upper right", fontsize=9)
+        # FIXED: Use dynamic limits instead of Price Change limits
         ax.set_xlim(x_min, x_max)
         ax.grid(alpha=0.2)
 
@@ -379,19 +388,21 @@ def plot_correlation_matrices(
 
         Ask 1, Bid 1, Ask 2, Bid 2, Ask 3, Bid 3
 
-    So the resulting correlation matrices are 6x6.
+    using ONLY Config.PLOT_LEVELS features per side in this order:
+
+        Ask 1, Bid 1, Ask 2, Bid 2, ...
+
+    So the resulting correlation matrices are {2 * Config.PLOT_LEVELS}x{2 * Config.PLOT_LEVELS}.
     Red = positive, blue = negative, values shown in each cell.
     """
-    print("\nGenerating correlation matrix plots (Ask1,Bid1,Ask2,Bid2,Ask3,Bid3)...")
-
     # Number of levels per side, based on the data layout
     total_features = real_q_all.shape[1]
     K = total_features // 2          # bids: 0..K-1, asks: K..2K-1
-    levels_to_use = min(3, K)        # in case K < 3
+    n_levels = min(Config.PLOT_LEVELS, K)        # Use configurable PLOT_LEVELS
 
-    # Build indices: [Ask1, Bid1, Ask2, Bid2, Ask3, Bid3]
+    # Build indices: [Ask1, Bid1, Ask2, Bid2, ...]
     selected_indices = []
-    for l in range(levels_to_use):
+    for l in range(n_levels):
         ask_idx = K + l   # Ask (l+1)
         bid_idx = l       # Bid (l+1)
         selected_indices.append(ask_idx)
@@ -408,7 +419,7 @@ def plot_correlation_matrices(
 
     # Construct labels in the desired order
     selected_labels = []
-    for l in range(levels_to_use):
+    for l in range(n_levels):
         selected_labels.append(f"Ask {l+1}")
         selected_labels.append(f"Bid {l+1}")
     n = len(selected_labels)  # should be 6 if levels_to_use=3

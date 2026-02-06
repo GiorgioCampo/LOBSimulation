@@ -2,7 +2,6 @@ import torch
 import numpy as np
 import torch.nn as nn
 import torch.optim as optim
-from torch.nn.utils.parametrizations import spectral_norm as sn
 from pathlib import Path
 from torch.utils.data import DataLoader, Dataset
 from utils import _get_next_state
@@ -10,7 +9,10 @@ import metrics_lib.metrics as m
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MODELS_DIR = BASE_DIR / "out/models/"
-DEBUG = True
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+DEBUG = False
+ADD_NOISE_S = False
+ENABLE_MOMENT_MATCHING = True
 
 MARKET_DEPTH = 3
 # Random seed
@@ -142,7 +144,9 @@ def train_gan(
     lambda_gp=10,
     save_model=False,
     save_every=10,
-    model_name=""
+    model_name="",
+    market_depth=3,
+    max_price_change=3
 ):
     """
     Training skeleton for vanilla GAN or WGAN.
@@ -155,13 +159,17 @@ def train_gan(
 
     # Choice of optimizers:
     # - commonly: Adam for G, Adam or RMSprop for D (WGAN recommends RMSprop originally)
-    # if wgan:
-    #     # WGAN commonly used RMSprop (original paper), but Adam also sometimes used
-    opt_d = optim.RMSprop(discriminator.parameters(), lr=lr_d)
-    opt_g = optim.RMSprop(generator.parameters(), lr=lr_g)
-    # else:
-    # opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.0, 0.9))
-    # opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.0, 0.9))
+    if wgan:
+        # WGAN-GP often prefers Adam with these betas
+        opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.0, 0.9))
+        opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.0, 0.9))
+    else:
+        opt_d = optim.Adam(discriminator.parameters(), lr=lr_d, betas=(0.5, 0.999))
+        opt_g = optim.Adam(generator.parameters(), lr=lr_g, betas=(0.5, 0.999))
+
+    # Learning Rate Schedulers
+    scheduler_d = optim.lr_scheduler.ExponentialLR(opt_d, gamma=gamma)
+    scheduler_g = optim.lr_scheduler.ExponentialLR(opt_g, gamma=gamma)
 
     # Loss for vanilla GAN
     #bce_loss = nn.BCEWithLogitsLoss()
@@ -181,7 +189,7 @@ def train_gan(
     # -----------------------
     # Helper to compute Frobenius metric
     # -----------------------
-    def compute_metrics(generator, dataloader, device, z_dim, val_seed=42):
+    def compute_metrics(generator, dataloader, device, z_dim, market_depth, max_price_change, val_seed=42):
         """
         Computes evaluation metrics for the generator:
         - Frobenius norm on level correlations
@@ -212,41 +220,91 @@ def train_gan(
                 X, S = X.to(device), S.to(device)
                 B = X.size(0)
 
+        # Helper to find sign change index (pivot)
+        def find_pivot_shift(data: torch.Tensor, center_idx: int):
+            # data: (B, T)
+            # Find all transitions from bid (<0) to ask (>0)
+            is_bid = data < 0
+            is_ask = data > 0
+            transition = is_bid[:, :-1] & is_ask[:, 1:]
+            
+            # Find transition closest to the theoretical center (center_idx - 1)
+            B, T = data.shape
+            device = data.device
+            center = center_idx - 1
+            idxs = torch.arange(T - 1, device=device).unsqueeze(0)
+            
+            dist = torch.abs(idxs - center)
+            # Mask out non-transitions by setting distance to max possible
+            dist = torch.where(transition, dist, torch.full_like(dist, T))
+            
+            pivot = dist.argmin(dim=1)
+            has_transition = transition.any(dim=1)
+            
+            # shift = pivot - center
+            shift = torch.where(has_transition, pivot - center, torch.zeros_like(pivot))
+            return shift
+
+        X_CENTER = market_depth + max_price_change
+
+        with torch.no_grad():
+            for X, S in dataloader:
+                X, S = X.to(device), S.to(device)
+                B = X.size(0)
+
                 # --- REAL TRANSITION (S_t -> X_{t+1}) ---
                 # Move detection from imbalanced state X
-                move_real = (X < 0).sum(dim=1) - 2 * MARKET_DEPTH
+                move_real = find_pivot_shift(X, X_CENTER)
                 mid_changes_real.extend(move_real.cpu().numpy())
 
                 # Conditioning queues at t (from S_t)
-                best_bids_cond_real.extend(S[:, MARKET_DEPTH - 1].cpu().numpy())
-                best_asks_cond_real.extend(S[:, MARKET_DEPTH].cpu().numpy())
+                best_bids_cond_real.extend(S[:, market_depth - 1].cpu().numpy())
+                best_asks_cond_real.extend(S[:, market_depth].cpu().numpy())
                 
                 # Centered states for correlations
-                real_X_t1_list.append(_get_next_state(X).cpu())
+                # Pivot is the index of the last bid (q1_b)
+                pivot_real = (X_CENTER - 1) + move_real
+                
+                # S-like window: [q_d^b, ..., q_1^b, q_1^a, ..., q_d^a]
+                # q_1^b is at pivot_real (offset 0), q_1^a at pivot_real + 1
+                offsets = torch.arange(-(market_depth - 1), market_depth + 1, device=device)
+                indices = pivot_real.view(-1, 1) + offsets.view(1, -1)
+                indices = indices.long().clamp(0, X.size(1) - 1)
+                centered_X_real = torch.gather(X, 1, indices)
+
+                real_X_t1_list.append(centered_X_real.cpu())
                 real_X_t_list.append(S.cpu())
 
                 # --- FAKE TRANSITION (S_{fake, t} -> X_{fake, t+1}) ---
                 # Step 1: Real S_t -> Fake X_{t+1} 
-                # (This is just to get a realistic 'fake' starting point)
                 z1 = torch.randn(B, z_dim, device=device)
-                X_f1 = generator(z1, S)
-                S_f1 = _get_next_state(X_f1) # S_{fake, t}
+                X_f1_imb = generator(z1, S)
+                
+                # Detect move and get centered fake state S_f1
+                move_f1 = find_pivot_shift(X_f1_imb, X_CENTER)
+                pivot_f1 = (X_CENTER - 1) + move_f1
+                idx_f1 = pivot_f1.view(-1, 1) + offsets.view(1, -1)
+                idx_f1 = idx_f1.long().clamp(0, X_f1_imb.size(1) - 1)
+                S_f1 = torch.gather(X_f1_imb, 1, idx_f1) # S_{fake, t}
                 
                 # Step 2: Fake S_{fake, t} -> Fake X_{fake, t+1}
-                # Now we have a 'pure' fake transition starting from a model output
                 z2 = torch.randn(B, z_dim, device=device)
-                X_f2 = generator(z2, S_f1)
+                X_f2_imb = generator(z2, S_f1)
                 
-                # Move detection for purely fake transition
-                move_fake = (X_f2 < 0).sum(dim=1) - 2 * MARKET_DEPTH
-                mid_changes_fake.extend(move_fake.cpu().numpy())
+                move_f2 = find_pivot_shift(X_f2_imb, X_CENTER)
+                pivot_f2 = (X_CENTER - 1) + move_f2
+                idx_f2 = pivot_f2.view(-1, 1) + offsets.view(1, -1)
+                idx_f2 = idx_f2.long().clamp(0, X_f2_imb.size(1) - 1)
+                centered_X_fake = torch.gather(X_f2_imb, 1, idx_f2)
+
+                mid_changes_fake.extend(move_f2.cpu().numpy())
 
                 # Conditioning queues at t (from S_{fake, t})
-                best_bids_cond_fake.extend(S_f1[:, MARKET_DEPTH - 1].cpu().numpy())
-                best_asks_cond_fake.extend(S_f1[:, MARKET_DEPTH].cpu().numpy())
+                best_bids_cond_fake.extend(S_f1[:, market_depth - 1].cpu().numpy()) 
+                best_asks_cond_fake.extend(S_f1[:, market_depth].cpu().numpy())
                 
                 # Centered states for correlations
-                fake_X_t1_list.append(_get_next_state(X_f2).cpu())
+                fake_X_t1_list.append(centered_X_fake.cpu())
                 fake_X_t_list.append(S_f1.cpu())
 
         # Concatenate all batches
@@ -375,14 +433,38 @@ def train_gan(
                 per_sample_norms_list.append(grad.view(batch_size, -1).norm(2, dim=1).detach().cpu())
 
             # ====== Update Generator ======
-            z = torch.randn(batch_size, z_dim, device=device)
-            gen_x = generator(z, s)
-            g_loss = -discriminator(gen_x, s).mean()
-            
-            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=10)
-
             opt_g.zero_grad()
+            z = torch.randn(batch_size, z_dim, device=device)
+            
+            # Input Noise Injection: Add noise to S to teach G to recover from off-manifold states
+            if ADD_NOISE_S:
+                s_noise = torch.randn_like(s) * 0.05
+                s_noisy = s + s_noise
+            else:
+                s_noisy = s
+            
+            gen_x = generator(z, s_noisy)
+            
+            # 1. Adversarial Loss
+            g_loss_adv = -discriminator(gen_x, s).mean()
+            
+            # 2. Moment Matching Loss (Variance Forcing)
+            if ENABLE_MOMENT_MATCHING:
+                # Force generator to match the standard deviation of real data feature-wise
+                std_real = torch.std(real_x, dim=0)
+                std_fake = torch.std(gen_x, dim=0)
+                loss_moment = torch.mean((std_real - std_fake) ** 2)
+                
+                # Weighting: Needs to be large enough to be visible vs g_loss_adv (~0.5)
+                # 10.0 is a strong starting point for "forcing"
+                g_loss = g_loss_adv + 10.0 * loss_moment
+            else:
+                g_loss = g_loss_adv
+            
             g_loss.backward()
+            
+            # Gradient clipping (applied after backward)
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=10)
             
             # CALCULATE BEFORE STEPPING
             gnorm_g = sum(p.grad.norm()**2 for p in generator.parameters() if p.grad is not None)**0.5
@@ -481,7 +563,7 @@ def train_gan(
         w_dist_history.append(w_dist)
 
         # Calculate Frobenius Correlation
-        metrics = compute_metrics(generator, val_dataloader, device, z_dim)
+        metrics = compute_metrics(generator, val_dataloader, device, z_dim, market_depth, max_price_change)
         current_frobenius = metrics["frob_corr_level"]
         current_frobenius_diff = metrics["frob_corr_diff"]
         current_price_frob = metrics["frob_price"]
@@ -514,6 +596,10 @@ def train_gan(
             print(f"Saving models...")
             torch.save(generator.state_dict(), MODELS_DIR / f"generator_{model_name}.pth")
             torch.save(discriminator.state_dict(), MODELS_DIR / f"discriminator_{model_name}.pth")
+
+        # Step schedulers
+        scheduler_d.step()
+        scheduler_g.step()
 
     return (generator, discriminator, d_loss_history, g_loss_history, w_dist_history,
            frob_level_history, frob_diff_history, price_frob_history, mean_dev_history, var_dev_history)

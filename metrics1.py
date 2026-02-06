@@ -16,10 +16,11 @@ from __future__ import annotations
 import os
 import glob
 import numpy as np
+import argparse
 
 from metrics_lib.config import Config
-from metrics_lib.data_loader import load_lob_csv, LOBData
-from metrics_lib.normalization import QueueNormalizer
+from metrics_lib.data_loader import load_lob_csv, load_lob_dbn, LOBData
+from metrics_lib.normalization import ZScoreNormalizer, QueueNormalizer
 from metrics_lib.plotting import (
     plot_all_level_marginals,
     plot_average_lob_shape,
@@ -59,17 +60,13 @@ def process_and_plot(
         if labels_all is None:
             labels_all = r_data.labels_all
         
-        # Ensure positive queues for processing (we handle sign visually later)
-        # Note: LOBData might already be modified in place if passed multiple times, 
-        # but np.abs is idempotent so it's safe.
-        r_data.qty_bid = np.abs(r_data.qty_bid)
-        r_data.qty_ask = np.abs(r_data.qty_ask)
-
+        # Enforce Positive Magnitudes for all metrics overlap
+        # (Real data bids are usually negative, we take abs)
         all_mid_real.append(r_data.mid)
-        all_best_bid_q_real.append(r_data.qty_bid[:, 0])
-        all_best_ask_q_real.append(r_data.qty_ask[:, 0])
-        all_real_bid_qty.append(r_data.qty_bid)
-        all_real_ask_qty.append(r_data.qty_ask)
+        all_best_bid_q_real.append(np.abs(r_data.qty_bid[:, 0]))
+        all_best_ask_q_real.append(np.abs(r_data.qty_ask[:, 0]))
+        all_real_bid_qty.append(np.abs(r_data.qty_bid))
+        all_real_ask_qty.append(np.abs(r_data.qty_ask))
 
     if not all_real_bid_qty:
         print("No real data to process.")
@@ -84,11 +81,23 @@ def process_and_plot(
 
     # --- Normalization ---
     # Fit normalizer on THIS set of real data
-    normalizer = QueueNormalizer(all_real_bid_qty, all_real_ask_qty)
+    print(f"Using Normalization Method: {Config.NORMALIZATION_METHOD}")
+    
+    if Config.NORMALIZATION_METHOD == "zscore":
+        normalizer = ZScoreNormalizer()
+        normalizer.fit(all_real_bid_qty, all_real_ask_qty)
+    elif Config.NORMALIZATION_METHOD == "queue":
+        normalizer = QueueNormalizer(
+            all_real_bid_qty, 
+            all_real_ask_qty,
+            scale_factor_bid=Config.SCALE_FACTOR_BID,
+            scale_factor_ask=Config.SCALE_FACTOR_ASK
+        )
+    else:
+        raise ValueError(f"Unknown normalization method: {Config.NORMALIZATION_METHOD}")
     
     real_q_bid_norm, real_q_ask_norm = normalizer.normalize(all_real_bid_qty, all_real_ask_qty)
-    print("Normalization C")
-    print(normalizer.C_bid, normalizer.C_ask)
+    print("Normalization applied.")
     real_q_all = np.hstack([real_q_bid_norm, real_q_ask_norm])
 
     # --- Real Midprice Matrix ---
@@ -96,8 +105,9 @@ def process_and_plot(
     try:
         M_real = compute_midprice_direction_matrix(
             mid_prices=all_mid_real,
-            best_bid_qty=all_best_bid_q_real,
-            best_ask_qty=all_best_ask_q_real,
+            # Quantile binning uses magnitude
+            best_bid_qty=np.abs(all_best_bid_q_real),
+            best_ask_qty=np.abs(all_best_ask_q_real),
             n_quantiles=10,
         )
     except ValueError as e:
@@ -110,16 +120,14 @@ def process_and_plot(
     M_fake = None
 
     if fake_data is not None:
-        # Normalize fake data using the REAL data's normalizer
-        fake_data.qty_bid = np.abs(fake_data.qty_bid)
-        fake_data.qty_ask = np.abs(fake_data.qty_ask)
-        
+        # Normalize fake data using the REAL data's normalizer (fitted on signed data)
         fake_q_bid_norm, fake_q_ask_norm = normalizer.normalize(fake_data.qty_bid, fake_data.qty_ask)
         fake_q_all = np.hstack([fake_q_bid_norm, fake_q_ask_norm])
 
         try:
             M_fake = compute_midprice_direction_matrix(
                 mid_prices=fake_data.mid,
+                # Quantile binning uses magnitude
                 best_bid_qty=np.abs(fake_data.qty_bid[:, 0]),
                 best_ask_qty=np.abs(fake_data.qty_ask[:, 0]),
                 n_quantiles=10,
@@ -190,51 +198,73 @@ def process_and_plot(
     # Manually overwrite mid since LOBData init calculates it from prices
     aggregated_real_data.mid = all_mid_real
     
+    # --- Tick Size Estimation ---
+    # Detect the base unit of mid-price movement (e.g. 0.125 for ES)
+    mid_diff_abs = np.abs(np.diff(all_mid_real))
+    mid_diffs_nonzero = mid_diff_abs[mid_diff_abs > 1e-6]
+    if len(mid_diffs_nonzero) > 0:
+        tick_size = np.min(mid_diffs_nonzero)
+    else:
+        tick_size = 0.125 # Default for ES mid-moves
+        
+    print(f"Re-aligned Tick Size for Metrics (mid-unit): {tick_size}")
+
     plot_conditional_marginals(
         real_q_bid=real_q_bid_norm,
         real_q_ask=real_q_ask_norm,
         real_data=aggregated_real_data,
-        tick_size=0.001,
+        tick_size=tick_size,
         output_path=os.path.join(output_dir, "conditional_marginals.png"),
         fake_q_bid=fake_q_bid_norm,
         fake_q_ask=fake_q_ask_norm,
         fake_data=fake_data,
-        ks=[1, 2, 3],
-        levels=[0, 1, 2],
+        ks=[1, 2, 4], # k=1 is 0.125, k=2 is 0.25, k=4 is 0.50
+        levels=[0, 1], 
         grid_cols=Config.GRID_COLS,
     )
 
 
 def main():
+    parser = argparse.ArgumentParser(description="LOB-GAN Metrics & Diagnostics")
+    parser.add_argument("--normalization", choices=["zscore", "queue"], 
+                        default=Config.NORMALIZATION_METHOD, 
+                        help="Normalization method (overrides config)")
+    args = parser.parse_args()
+
+    # Apply override
+    if args.normalization:
+        Config.NORMALIZATION_METHOD = args.normalization
+
     print("=" * 60)
     print("LOB-GAN Metrics & Diagnostics")
     print("=" * 60)
 
-    # 1. Find all CSV files in the data directory
-    # For FI-2010 data, CSV files are directly in the directory
+    # 1. Find all data files in the directory
     data_dir = Config.DATA_DIR
     
-    # Look for processed CSV files
-    csv_files = sorted(glob.glob(os.path.join(data_dir, "*_processed.csv")))
+    # Look for both DBNS and CSV files
+    dbn_files = sorted(glob.glob(os.path.join(data_dir, "*.dbn.zst")))
+    csv_files = sorted(glob.glob(os.path.join(data_dir, "*.csv")))
     
-    if not csv_files:
-        # Fallback: look for any CSV files
-        csv_files = sorted(glob.glob(os.path.join(data_dir, "*.csv")))
+    all_files = dbn_files + csv_files
     
     days_data = {}
     all_real_data_list = []
 
     print(f"Searching for data in: {data_dir}")
-    print(f"Found {len(csv_files)} CSV files")
+    print(f"Found {len(all_files)} total files ({len(dbn_files)} DBN, {len(csv_files)} CSV)")
     
-    for csv_path in csv_files:
-        file_name = os.path.basename(csv_path)
-        # Use filename without extension as the "day" identifier
+    for file_path in all_files:
+        file_name = os.path.basename(file_path)
         day_name = os.path.splitext(file_name)[0]
+        if day_name.endswith('.dbn'): day_name = os.path.splitext(day_name)[0]
         
         try:
-            print(f"Loading {file_name}...")
-            data = load_lob_csv(csv_path)
+            if file_path.endswith(".dbn.zst"):
+                data = load_lob_dbn(file_path, interval_ms=Config.INTERVAL_MS, market_depth=Config.MARKET_DEPTH)
+            else:
+                data = load_lob_csv(file_path)
+                
             days_data[day_name] = data
             all_real_data_list.append(data)
         except Exception as e:

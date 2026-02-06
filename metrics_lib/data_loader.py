@@ -1,8 +1,6 @@
 import numpy as np
 from typing import List, Tuple
-# from train_model import MARKET_DEPTH
-
-MARKET_DEPTH = 3
+from metrics_lib.config import Config
 
 class LOBData:
     """Container for LOB snapshot data"""
@@ -26,13 +24,14 @@ class LOBData:
         self.labels_ask = [f"Ask {i}" for i in range(1, self.K + 1)]
         self.labels_all = self.labels_bid + self.labels_ask
 
-        # Truncate to configured market depth
-        self.prices_bid = self.prices_bid[:, :MARKET_DEPTH]
-        self.qty_bid = self.qty_bid[:, :MARKET_DEPTH]
-        self.prices_ask = self.prices_ask[:, :MARKET_DEPTH]
-        self.qty_ask = self.qty_ask[:, :MARKET_DEPTH]
-        self.labels_ask = self.labels_ask[:MARKET_DEPTH]
-        self.labels_bid = self.labels_bid[:MARKET_DEPTH]
+        # Truncate to configured market depth (or available depth)
+        target_k = min(Config.MARKET_DEPTH, self.K)
+        self.prices_bid = self.prices_bid[:, :target_k]
+        self.qty_bid = self.qty_bid[:, :target_k]
+        self.prices_ask = self.prices_ask[:, :target_k]
+        self.qty_ask = self.qty_ask[:, :target_k]
+        self.labels_ask = self.labels_ask[:target_k]
+        self.labels_bid = self.labels_bid[:target_k]
         self.labels_all = self.labels_bid + self.labels_ask
         self.K = self.prices_bid.shape[1]
 
@@ -83,3 +82,28 @@ def load_lob_csv(path: str) -> LOBData:
     qty_ask    = data[:, 3*K:4*K]
     
     return LOBData(prices_bid, qty_bid, prices_ask, qty_ask)
+
+
+def load_lob_dbn(path: str, interval_ms: int = 100, market_depth: int = Config.MARKET_DEPTH) -> LOBData:
+    """Load L2 snapshot from raw Databento .dbn.zst file into LOBData structure"""
+    print(f"Loading raw DBN: {path}")
+    
+    # Local import to avoid circular dependency or path issues
+    from databento_utils import load_dbn_to_numpy
+    
+    arr, ts = load_dbn_to_numpy(path, interval_ms=interval_ms, market_depth=market_depth)
+    
+    if len(arr) == 0:
+        raise ValueError(f"No samples loaded from {path}")
+        
+    print(f"  Loaded {len(arr)} samples")
+    
+    # Extract levels from the interleaved array
+    # Order: [askPx_0, askQty_0, bidPx_0, bidQty_0, ...]
+    ask_px = arr[:, 0::4]
+    ask_qty = arr[:, 1::4]
+    bid_px = arr[:, 2::4]
+    # bid quantities are already negative in load_dbn_to_numpy
+    bid_qty = arr[:, 3::4] 
+    
+    return LOBData(bid_px, bid_qty, ask_px, ask_qty)
